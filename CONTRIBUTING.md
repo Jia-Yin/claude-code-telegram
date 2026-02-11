@@ -16,8 +16,8 @@ This project is currently under active development with the following status:
 
 ### Prerequisites
 
-- Python 3.9 or higher
-- Poetry for dependency management
+- Python 3.10 or higher
+- uv for dependency management
 - Git for version control
 
 ### Setting Up Development Environment
@@ -61,7 +61,7 @@ This project is currently under active development with the following status:
    src/
    ├── config/     # Configuration (✅ Complete)
    ├── security/   # Authentication & Security (✅ Complete)
-   ├── bot/        # Telegram bot (✅ Complete - TODO-4)  
+   ├── bot/        # Telegram bot (✅ Complete - TODO-4)
    ├── claude/     # Claude integration (✅ Complete - TODO-5)
    └── storage/    # Database (✅ Complete - TODO-6)
    ```
@@ -91,7 +91,7 @@ from typing import Optional, List, Dict, Any
 from pathlib import Path
 
 async def process_data(
-    items: List[Dict[str, Any]], 
+    items: List[Dict[str, Any]],
     config: Optional[Path] = None
 ) -> bool:
     """Process data with optional config."""
@@ -223,7 +223,7 @@ Use conventional commits:
 
 ```
 feat: add rate limiting functionality
-fix: resolve configuration validation issue  
+fix: resolve configuration validation issue
 docs: update development guide
 test: add tests for authentication system
 refactor: reorganize bot handlers
@@ -240,7 +240,7 @@ Fixes #123
 
 ## Type of Change
 - [ ] Bug fix
-- [ ] New feature  
+- [ ] New feature
 - [ ] Breaking change
 - [ ] Documentation update
 
@@ -290,8 +290,8 @@ What you expected to happen.
 
 **Environment**
 - OS: [e.g. macOS, Linux]
-- Python version: [e.g. 3.9]
-- Poetry version: [e.g. 1.7.1]
+- Python version: [e.g. 3.12]
+- uv version: [e.g. 0.9.1]
 
 **Additional context**
 Any other context about the problem.
@@ -336,8 +336,8 @@ Instead:
 
 ### Required Tools
 
-- **Poetry**: Dependency management
-- **Black**: Code formatting  
+- **uv**: Dependency management
+- **Black**: Code formatting
 - **isort**: Import sorting
 - **flake8**: Linting
 - **mypy**: Type checking
@@ -357,7 +357,7 @@ Instead:
 ```
 
 #### PyCharm
-- Configure Poetry interpreter
+- Configure the `.venv` interpreter
 - Enable Black formatting
 - Enable flake8 and mypy inspections
 
@@ -394,7 +394,7 @@ Instead:
 ### Debugging
 - Use `make run-debug` for detailed logging
 - Check test output with `make test`
-- Run type checking with `poetry run mypy src`
+- Run type checking with `uv run mypy src`
 
 ## Recognition
 

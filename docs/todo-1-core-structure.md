@@ -92,19 +92,19 @@ claude-code-telegram/
 
 ### pyproject.toml
 ```toml
-[tool.poetry]
+[project]
 name = "claude-code-telegram"
 version = "0.1.0"
 description = "Telegram bot for remote Claude Code access"
-authors = ["Your Name <email@example.com>"]
-license = "MIT"
+requires-python = ">=3.10"
 readme = "README.md"
-repository = "https://github.com/yourusername/claude-code-telegram"
+license = { text = "MIT" }
+authors = [{ name = "Your Name", email = "email@example.com" }]
 keywords = ["telegram", "bot", "claude", "ai", "development"]
 
 [tool.black]
 line-length = 88
-target-version = ['py39']
+target-version = ['py310']
 
 [tool.isort]
 profile = "black"
@@ -116,7 +116,7 @@ python_files = "test_*.py"
 addopts = "-v --cov=src --cov-report=html --cov-report=term-missing"
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true

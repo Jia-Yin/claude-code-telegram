@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Telegram bot providing remote access to Claude Code. Python 3.10+, built with Poetry, using `python-telegram-bot` for Telegram and `claude-agent-sdk` for Claude Code integration.
+Telegram bot providing remote access to Claude Code. Python 3.10+, built with uv, using `python-telegram-bot` for Telegram and `claude-agent-sdk` for Claude Code integration.
 
 ## Commands
 
@@ -18,10 +18,10 @@ make lint             # Black + isort + flake8 + mypy
 make format           # Auto-format with black + isort
 
 # Run a single test
-poetry run pytest tests/unit/test_config.py -k test_name -v
+uv run pytest tests/unit/test_config.py -k test_name -v
 
 # Type checking only
-poetry run mypy src
+uv run mypy src
 ```
 
 ## Architecture

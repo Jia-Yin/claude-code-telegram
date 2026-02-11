@@ -6,8 +6,8 @@ This document provides detailed information for developers working on the Claude
 
 ### Prerequisites
 
-- Python 3.9 or higher
-- Poetry for dependency management
+- Python 3.10 or higher
+- uv for dependency management
 - Git for version control
 - Claude authentication (one of):
   - Claude Code CLI installed and authenticated
@@ -21,9 +21,9 @@ This document provides detailed information for developers working on the Claude
    cd claude-code-telegram
    ```
 
-2. **Install Poetry** (if not already installed):
+2. **Install uv** (if not already installed):
    ```bash
-   pip install poetry
+   curl -LsSf https://astral.sh/uv/install.sh | sh
    ```
 
 3. **Install dependencies**:
@@ -33,7 +33,7 @@ This document provides detailed information for developers working on the Claude
 
 4. **Set up pre-commit hooks** (optional but recommended):
    ```bash
-   poetry run pre-commit install
+   uv run pre-commit install
    ```
 
 5. **Create configuration file**:
@@ -46,9 +46,10 @@ This document provides detailed information for developers working on the Claude
 
 ### Daily Development
 
-1. **Activate the Poetry environment**:
+1. **Create/sync the virtualenv**:
    ```bash
-   poetry shell
+   uv sync --extra dev
+   source .venv/bin/activate
    ```
 
 2. **Run tests continuously during development**:
@@ -162,7 +163,7 @@ from typing import Optional, List, Dict, Any
 from pathlib import Path
 
 def process_config(
-    settings: Settings, 
+    settings: Settings,
     overrides: Optional[Dict[str, Any]] = None
 ) -> Path:
     """Process configuration with optional overrides."""
@@ -223,7 +224,7 @@ def test_feature_with_config():
         debug=True,
         claude_max_turns=5
     )
-    
+
     # Test implementation
     assert config.debug is True
     assert config.claude_max_turns == 5
@@ -255,7 +256,7 @@ We aim for >80% test coverage. Current coverage:
 
 #### TODO-1: Project Structure
 - Complete package layout with proper Python packaging
-- Poetry dependency management with dev/test/prod separation  
+- uv dependency management with locked installs via `uv.lock`
 - Makefile with development commands
 - Exception hierarchy with proper inheritance
 - Structured logging with JSON output for production
@@ -355,7 +356,7 @@ ENABLE_QUICK_ACTIONS=true
 ```bash
 # Basic run with environment variables
 export TELEGRAM_BOT_TOKEN=test_token
-export TELEGRAM_BOT_USERNAME=test_bot  
+export TELEGRAM_BOT_USERNAME=test_bot
 export APPROVED_DIRECTORY=/tmp/test_projects
 make run-debug
 
@@ -466,15 +467,15 @@ test: add tests for authentication system
 
 ### Common Issues
 
-1. **Import errors**: Make sure you're in the Poetry environment (`poetry shell`)
+1. **Import errors**: Make sure you're using the uv virtualenv (`source .venv/bin/activate`) or run commands via `uv run ...`
 
 2. **Configuration validation errors**: Check that required environment variables are set
 
 3. **Test failures**: Ensure test dependencies are installed (`make dev`)
 
-4. **Type checking errors**: Run `poetry run mypy src` to see detailed errors
+4. **Type checking errors**: Run `uv run mypy src` to see detailed errors
 
-5. **Poetry issues**: Try `poetry lock --no-update` to fix lock file issues
+5. **Lockfile issues**: Try `uv lock` to regenerate `uv.lock`
 
 ### Getting Help
 

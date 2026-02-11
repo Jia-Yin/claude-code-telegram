@@ -141,7 +141,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Project Foundation (TODO-1)
 - Complete project structure with proper Python packaging
-- Poetry dependency management with separate dev/test/prod dependencies
+- uv dependency management with locked installs via `uv.lock`
 - Comprehensive Makefile with development commands
 - Exception hierarchy with proper inheritance (`src/exceptions.py`)
 - Structured logging with JSON output for production
@@ -153,7 +153,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Pydantic Settings v2** implementation with environment variable loading
 - **Environment-specific configuration** with automatic overrides:
   - Development: Debug mode, verbose logging, relaxed rate limits
-  - Testing: In-memory database, fast timeouts, no telemetry  
+  - Testing: In-memory database, fast timeouts, no telemetry
   - Production: Strict limits, structured logging, telemetry enabled
 - **Feature flags system** for dynamic functionality control:
   - MCP (Model Context Protocol) support
@@ -190,7 +190,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Dependencies
 - `python-telegram-bot` for Telegram API
-- `structlog` for structured logging  
+- `structlog` for structured logging
 - `pydantic` and `pydantic-settings` for configuration management
 - `aiofiles` and `aiosqlite` for async file and database operations
 - Development tools: pytest, black, isort, flake8, mypy, pytest-cov
@@ -219,7 +219,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Development Status
 
 - ✅ **TODO-1**: Project Structure & Core Setup (Complete)
-- ✅ **TODO-2**: Configuration Management (Complete)  
+- ✅ **TODO-2**: Configuration Management (Complete)
 - ✅ **TODO-3**: Authentication & Security Framework (Complete)
 - ✅ **TODO-4**: Telegram Bot Core (Complete)
 - ✅ **TODO-5**: Claude Code Integration (Complete)

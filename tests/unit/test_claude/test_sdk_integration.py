@@ -39,8 +39,9 @@ class TestClaudeSDKManager:
     """Test Claude SDK manager."""
 
     @pytest.fixture
-    def config(self, tmp_path):
+    def config(self, tmp_path, monkeypatch):
         """Create test config without API key."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         return Settings(
             telegram_bot_token="test:token",
             telegram_bot_username="testbot",

@@ -6,8 +6,8 @@ This guide provides comprehensive instructions for setting up the Claude Code Te
 
 ### 1. Prerequisites
 
-- **Python 3.9+** - [Download here](https://www.python.org/downloads/)
-- **Poetry** - Modern Python dependency management
+- **Python 3.10+** - [Download here](https://www.python.org/downloads/)
+- **uv** - Fast Python package & environment manager
 - **Telegram Bot Token** - Get one from [@BotFather](https://t.me/botfather)
 - **Claude Authentication** - Choose one method below
 
@@ -96,8 +96,8 @@ USE_SDK=false
 git clone https://github.com/yourusername/claude-code-telegram.git
 cd claude-code-telegram
 
-# Install Poetry (if needed)
-curl -sSL https://install.python-poetry.org | python3 -
+# Install uv (if needed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Install dependencies
 make dev

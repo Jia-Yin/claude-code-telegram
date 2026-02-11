@@ -268,13 +268,13 @@ Run Claude Code remotely through Telegram with a terminal-like interface.
 
 ## Features
 
-✨ **Terminal-like Commands** - Navigate projects with familiar commands (`cd`, `ls`, `pwd`)  
-🤖 **Full Claude Code Integration** - All Claude Code features available remotely  
-🔒 **Security First** - Directory isolation, user authentication, rate limiting  
-📁 **Project Management** - Easy project switching and session persistence  
-🚀 **Advanced Features** - File uploads, Git integration, quick actions  
-📊 **Usage Tracking** - Monitor costs and usage per user  
-🔧 **Extensible** - Plugin-ready architecture for custom features  
+✨ **Terminal-like Commands** - Navigate projects with familiar commands (`cd`, `ls`, `pwd`)
+🤖 **Full Claude Code Integration** - All Claude Code features available remotely
+🔒 **Security First** - Directory isolation, user authentication, rate limiting
+📁 **Project Management** - Easy project switching and session persistence
+🚀 **Advanced Features** - File uploads, Git integration, quick actions
+📊 **Usage Tracking** - Monitor costs and usage per user
+🔧 **Extensible** - Plugin-ready architecture for custom features
 
 ## Quick Start
 
@@ -317,7 +317,7 @@ ALLOWED_USERS=123456789,987654321  # Your Telegram user ID
 
 ```bash
 # Development
-poetry run claude-telegram-bot
+uv run claude-telegram-bot
 
 # Production with Docker
 docker-compose up -d
@@ -390,7 +390,7 @@ pre-commit install
 pytest
 
 # Run with hot reload
-poetry run claude-telegram-bot --debug
+uv run claude-telegram-bot --debug
 ```
 
 ### Project Structure
@@ -717,7 +717,7 @@ We take security seriously. If you discover a vulnerability, please follow respo
 
 ## Contact
 
-Security issues: security@example.com  
+Security issues: security@example.com
 PGP Key: [Download](https://example.com/pgp-key.asc)
 ```
 
@@ -742,7 +742,7 @@ async def check_health():
         'telegram': check_telegram(),
         'storage': check_storage()
     }
-    
+
     results = {}
     for name, check in checks.items():
         try:
@@ -750,10 +750,10 @@ async def check_health():
         except Exception as e:
             results[name] = False
             print(f"Health check failed for {name}: {e}")
-    
+
     # Overall health
     healthy = all(results.values())
-    
+
     if healthy:
         print("All health checks passed")
         sys.exit(0)
@@ -764,7 +764,7 @@ async def check_health():
 async def check_database():
     """Check database connectivity"""
     from src.storage.database import DatabaseManager
-    
+
     db = DatabaseManager(os.getenv('DATABASE_URL'))
     async with db.get_connection() as conn:
         await conn.execute("SELECT 1")
@@ -773,14 +773,14 @@ async def check_database():
 async def check_claude():
     """Check Claude Code availability"""
     import subprocess
-    
+
     result = subprocess.run(['claude', '--version'], capture_output=True)
     return result.returncode == 0
 
 async def check_telegram():
     """Check Telegram bot token"""
     import aiohttp
-    
+
     token = os.getenv('TELEGRAM_BOT_TOKEN')
     async with aiohttp.ClientSession() as session:
         async with session.get(f'https://api.telegram.org/bot{token}/getMe') as resp:
@@ -922,23 +922,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
-    
+
     - name: Build Docker image
       run: |
         docker build -t claude-code-bot:${{ github.ref_name }} .
         docker tag claude-code-bot:${{ github.ref_name }} claude-code-bot:latest
-    
+
     - name: Login to Registry
       uses: docker/login-action@v2
       with:
         username: ${{ secrets.DOCKER_USERNAME }}
         password: ${{ secrets.DOCKER_PASSWORD }}
-    
+
     - name: Push images
       run: |
         docker push claude-code-bot:${{ github.ref_name }}
         docker push claude-code-bot:latest
-    
+
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:

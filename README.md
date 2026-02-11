@@ -1,7 +1,7 @@
 # Claude Code Telegram Bot 🤖
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
 A powerful Telegram bot that provides remote access to [Claude Code](https://claude.ai/code), enabling developers to interact with their projects from anywhere. Transform your phone into a development terminal with full Claude AI assistance, project navigation, and session persistence.
 
@@ -9,7 +9,7 @@ A powerful Telegram bot that provides remote access to [Claude Code](https://cla
 
 This bot bridges Telegram and Claude Code, allowing you to:
 - 💬 **Chat with Claude** about your code projects through Telegram
-- 📁 **Navigate directories** and manage files remotely  
+- 📁 **Navigate directories** and manage files remotely
 - 🔄 **Maintain context** across conversations with session persistence
 - 📱 **Code on the go** from any device with Telegram
 - 🛡️ **Stay secure** with built-in authentication and sandboxing
@@ -23,7 +23,7 @@ Perfect for code reviews on mobile, quick fixes while traveling, or getting AI a
 You: cd my-project
 Bot: 📂 Changed to: my-project/
 
-You: ls  
+You: ls
 Bot: 📁 src/
      📁 tests/
      📄 README.md
@@ -81,7 +81,7 @@ This project is actively being developed. Here's the current status of features:
 - **Error Recovery**: Intelligent error handling with helpful suggestions and retry logic
 - **Tool Support**: Access to Claude's full toolkit including file operations, code analysis, and more
 
-### 📱 Terminal-like Interface  
+### 📱 Terminal-like Interface
 - **Directory Navigation**: `cd`, `ls`, `pwd` commands just like a real terminal
 - **File Management**: Upload files, archives, and images for Claude to analyze
 - **Git Integration**: View repository status, diffs, and commit history
@@ -106,8 +106,8 @@ This project is actively being developed. Here's the current status of features:
 
 ### Prerequisites
 
-- **Python 3.9+** - [Download here](https://www.python.org/downloads/)
-- **Poetry** - Modern Python dependency management
+- **Python 3.10+** - [Download here](https://www.python.org/downloads/)
+- **uv** - Fast Python package & environment manager
 - **Claude Code CLI** - [Install from here](https://claude.ai/code)
 - **Telegram Bot Token** - Get one from [@BotFather](https://t.me/botfather)
 
@@ -148,8 +148,8 @@ claude
 git clone https://github.com/yourusername/claude-code-telegram.git
 cd claude-code-telegram
 
-# Install Poetry (if needed)
-curl -sSL https://install.python-poetry.org | python3 -
+# Install uv (if needed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Install dependencies
 make dev
@@ -196,7 +196,7 @@ Once your bot is running, you can use these commands in Telegram:
 #### Navigation Commands
 ```
 /ls                    # List files in current directory
-/cd myproject         # Change to project directory  
+/cd myproject         # Change to project directory
 /pwd                  # Show current directory
 /projects             # Show available projects
 ```
@@ -233,7 +233,7 @@ Just send any message to interact with Claude about your code:
 
 ```
 You: "Analyze this Python function for potential bugs"
-You: "Help me optimize this database query"  
+You: "Help me optimize this database query"
 You: "Create a React component for user authentication"
 You: "Explain what this code does"
 ```
@@ -286,7 +286,7 @@ You: "Explain what this code does"
 ```
 You: [Upload project.zip]
 Bot: 📦 Analyzing archive: project.zip
-     
+
      Project Structure:
      📁 src/
        📄 main.py (2.3KB)
@@ -294,27 +294,27 @@ Bot: 📦 Analyzing archive: project.zip
      📁 tests/
        📄 test_main.py (3.2KB)
      📄 requirements.txt (245B)
-     
+
      Language: Python
      Frameworks: pytest detected
      Entry point: src/main.py
-     
+
      🤖 I've analyzed your Python project. It appears to be...
 ```
 
-#### 🔄 Git Integration  
+#### 🔄 Git Integration
 ```
 You: /git
 Bot: 📊 Git Repository Status
-     
+
      🌿 Branch: feature/new-api
      📝 Changes: 3 files modified
      🔄 Behind main: 2 commits
-     
+
      Recent commits:
      • abc123 - Add API endpoint (2 hours ago)
      • def456 - Update dependencies (1 day ago)
-     
+
      [View Diff] [Show Log] [See Changes]
 ```
 
@@ -322,7 +322,7 @@ Bot: 📊 Git Repository Status
 ```
 You: /actions
 Bot: 🚀 Available Quick Actions
-     
+
      Based on your project context:
      [🧪 Run Tests] [📦 Install Deps]
      [🎨 Format Code] [🔍 Run Linter]
@@ -333,10 +333,10 @@ Bot: 🚀 Available Quick Actions
 ```
 You: /export
 Bot: 📤 Export Session
-     
+
      Choose format:
      [📝 Markdown] [🌐 HTML] [📋 JSON]
-     
+
 You: [Click Markdown]
 Bot: ✅ Session exported!
      📎 claude_session_abc123.md (15.2KB)
@@ -348,7 +348,7 @@ Bot: ✅ Session exported!
 The bot provides helpful buttons for common tasks:
 
 - 🧪 **Test** - Run your test suite
-- 📦 **Install** - Install dependencies 
+- 📦 **Install** - Install dependencies
 - 🎨 **Format** - Format your code
 - 🔍 **Find TODOs** - Locate TODO comments
 - 🔨 **Build** - Build your project
@@ -377,10 +377,10 @@ ALLOWED_USERS=123456789,987654321  # Your Telegram user ID(s)
 USE_SDK=true                        # Use Python SDK (default) or CLI subprocess
 ANTHROPIC_API_KEY=sk-ant-api03-...  # Optional: API key for SDK (if not using CLI auth)
 CLAUDE_MAX_COST_PER_USER=10.0       # Max cost per user in USD
-CLAUDE_TIMEOUT_SECONDS=300          # Timeout for operations  
+CLAUDE_TIMEOUT_SECONDS=300          # Timeout for operations
 CLAUDE_ALLOWED_TOOLS="Read,Write,Edit,Bash,Glob,Grep,LS,Task,MultiEdit,NotebookRead,NotebookEdit,WebFetch,TodoRead,TodoWrite,WebSearch"
 
-# Rate Limiting  
+# Rate Limiting
 RATE_LIMIT_REQUESTS=10              # Requests per window
 RATE_LIMIT_WINDOW=60                # Window in seconds
 
@@ -455,7 +455,7 @@ To get your Telegram user ID for the `ALLOWED_USERS` setting:
 This bot implements enterprise-grade security:
 
 - **🔐 Access Control**: Whitelist-based user authentication
-- **📁 Directory Isolation**: Strict sandboxing to approved directories  
+- **📁 Directory Isolation**: Strict sandboxing to approved directories
 - **⏱️ Rate Limiting**: Request and cost-based limits prevent abuse
 - **🛡️ Input Validation**: Protection against injection attacks
 - **📊 Audit Logging**: Complete tracking of all user actions
@@ -485,7 +485,7 @@ make test
 
 ```bash
 make help          # Show all available commands
-make test          # Run tests with coverage  
+make test          # Run tests with coverage
 make lint          # Run code quality checks
 make format        # Auto-format code
 make run-debug     # Run bot in debug mode
