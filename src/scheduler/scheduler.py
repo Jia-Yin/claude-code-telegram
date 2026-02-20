@@ -117,13 +117,23 @@ class JobScheduler:
         return True
 
     async def list_jobs(self) -> List[Dict[str, Any]]:
-        """List all scheduled jobs from the database."""
+        """List all scheduled jobs from the database, enriched with next run time."""
         async with self.db_manager.get_connection() as conn:
             cursor = await conn.execute(
                 "SELECT * FROM scheduled_jobs WHERE is_active = 1 ORDER BY created_at"
             )
             rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            jobs = [dict(row) for row in rows]
+
+        # Enrich each job with next_run_time from APScheduler
+        for job in jobs:
+            ap_job = self._scheduler.get_job(job["job_id"])
+            if ap_job and ap_job.next_run_time:
+                job["next_run_time"] = ap_job.next_run_time
+            else:
+                job["next_run_time"] = None
+
+        return jobs
 
     async def _fire_event(
         self,

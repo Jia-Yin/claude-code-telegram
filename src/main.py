@@ -316,6 +316,7 @@ async def run_application(app: Dict[str, Any]) -> None:
                 default_working_directory=config.approved_directory,
             )
             await scheduler.start()
+            bot.deps["scheduler"] = scheduler
             logger.info("Job scheduler enabled")
 
         # Shutdown task
@@ -404,10 +405,30 @@ async def main() -> None:
 
 def run() -> None:
     """Synchronous entry point for setuptools."""
+    import os
+
+    restart_flag_file = Path.home() / ".claude-telegram-bot-restart"
+
+    # Remove restart flag if exists (from previous run)
+    if restart_flag_file.exists():
+        restart_flag_file.unlink()
+
     try:
         asyncio.run(main())
+
+        # Check if restart was requested
+        if restart_flag_file.exists():
+            print("\n🔄 Restarting bot (reloading code)...")
+            restart_flag_file.unlink()
+
+            # Replace current process with a new Python interpreter
+            # This ensures all code is reloaded from disk
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+
     except KeyboardInterrupt:
         print("\nShutdown requested by user")
+        if restart_flag_file.exists():
+            restart_flag_file.unlink()
         sys.exit(0)
 
 

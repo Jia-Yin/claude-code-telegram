@@ -85,6 +85,15 @@ class ClaudeIntegration:
             if update.tool_calls:
                 for tool_call in update.tool_calls:
                     tool_name = tool_call["name"]
+
+                    # Debug: Log actual tool name from SDK
+                    logger.debug(
+                        "Tool call received from SDK",
+                        tool_name=tool_name,
+                        tool_call_keys=list(tool_call.keys()),
+                        allowed_tools=self.config.claude_allowed_tools,
+                    )
+
                     valid, error = await self.tool_monitor.validate_tool_call(
                         tool_name,
                         tool_call.get("input", {}),

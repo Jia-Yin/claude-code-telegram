@@ -1,7 +1,7 @@
 """Command handlers for bot operations."""
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import structlog
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -44,12 +44,39 @@ def _is_private_chat(update: Update) -> bool:
     return bool(chat and getattr(chat, "type", "") == "private")
 
 
+async def _format_scheduled_jobs_section(scheduler: Any) -> str:
+    """Return a formatted HTML section listing all active scheduled jobs."""
+    if scheduler is None:
+        return ""
+    try:
+        jobs = await scheduler.list_jobs()
+    except Exception:
+        return ""
+    if not jobs:
+        return ""
+
+    lines = ["\n\n🗓 <b>自動排程任務：</b>"]
+    for job in jobs:
+        name = escape_html(job.get("job_name", "未命名"))
+        cron = escape_html(job.get("cron_expression", ""))
+        next_run = job.get("next_run_time")
+        if next_run:
+            next_str = next_run.strftime("%Y-%m-%d %H:%M %Z").strip()
+        else:
+            next_str = "未排定"
+        job_id = escape_html(job.get("job_id", "")[:8])
+        lines.append(f"• <b>{name}</b> — <code>{cron}</code>")
+        lines.append(f"  ⏰ 下次執行：{next_str}　ID：<code>{job_id}</code>")
+    return "\n".join(lines)
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start command."""
     user = update.effective_user
     settings: Settings = context.bot_data["settings"]
     audit_logger: AuditLogger = context.bot_data.get("audit_logger")
     manager = context.bot_data.get("project_threads_manager")
+    scheduler = context.bot_data.get("scheduler")
     sync_section = ""
 
     if settings.enable_project_threads and settings.project_threads_mode == "private":
@@ -107,6 +134,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 "Run <code>/sync_threads</code> to retry."
             )
 
+    schedule_section = await _format_scheduled_jobs_section(scheduler)
+
     welcome_message = (
         f"👋 Welcome to Claude Code Telegram Bot, {escape_html(user.first_name)}!\n\n"
         f"🤖 I help you access Claude Code remotely through Telegram.\n\n"
@@ -126,6 +155,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"🔒 Your access is secured and all actions are logged.\n"
         f"📊 Use <code>/status</code> to check your usage limits."
         f"{sync_section}"
+        f"{schedule_section}"
     )
 
     # Add quick action buttons

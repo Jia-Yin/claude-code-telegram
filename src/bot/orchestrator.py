@@ -6,10 +6,13 @@ classic mode, delegates to existing full-featured handlers.
 """
 
 import asyncio
+import json
 import re
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+
+import anthropic
 
 import structlog
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -290,9 +293,12 @@ class MessageOrchestrator:
             ("status", self.agentic_status),
             ("verbose", self.agentic_verbose),
             ("repo", self.agentic_repo),
+            ("restart", self.agentic_restart),
         ]
         if self.settings.enable_project_threads:
             handlers.append(("sync_threads", command.sync_threads))
+        if self.settings.enable_scheduler:
+            handlers.append(("schedule", self.agentic_schedule))
 
         for cmd, handler in handlers:
             app.add_handler(CommandHandler(cmd, self._inject_deps(handler)))
@@ -327,6 +333,15 @@ class MessageOrchestrator:
                 pattern=r"^cd:",
             )
         )
+
+        # Schedule management callbacks
+        if self.settings.enable_scheduler:
+            app.add_handler(
+                CallbackQueryHandler(
+                    self._inject_deps(self._agentic_schedule_callback),
+                    pattern=r"^sched:",
+                )
+            )
 
         logger.info("Agentic handlers registered")
 
@@ -387,9 +402,12 @@ class MessageOrchestrator:
                 BotCommand("status", "Show session status"),
                 BotCommand("verbose", "Set output verbosity (0/1/2)"),
                 BotCommand("repo", "List repos / switch workspace"),
+                BotCommand("restart", "Restart the bot process"),
             ]
             if self.settings.enable_project_threads:
                 commands.append(BotCommand("sync_threads", "Sync project topics"))
+            if self.settings.enable_scheduler:
+                commands.append(BotCommand("schedule", "管理自動排程任務"))
             return commands
         else:
             commands = [
@@ -457,13 +475,38 @@ class MessageOrchestrator:
         )
         dir_display = f"<code>{current_dir}/</code>"
 
+        # Build scheduled jobs section
+        scheduler = context.bot_data.get("scheduler")
+        schedule_line = ""
+        if scheduler is not None:
+            try:
+                jobs = await scheduler.list_jobs()
+                if jobs:
+                    lines = ["\n\n🗓 <b>自動排程任務：</b>"]
+                    for job in jobs:
+                        name = escape_html(job.get("job_name", "未命名"))
+                        cron = escape_html(job.get("cron_expression", ""))
+                        next_run = job.get("next_run_time")
+                        next_str = (
+                            next_run.strftime("%Y-%m-%d %H:%M %Z").strip()
+                            if next_run
+                            else "未排定"
+                        )
+                        job_id = escape_html(job.get("job_id", "")[:8])
+                        lines.append(f"• <b>{name}</b> — <code>{cron}</code>")
+                        lines.append(f"  ⏰ 下次執行：{next_str}　ID：<code>{job_id}</code>")
+                    schedule_line = "\n".join(lines)
+            except Exception:
+                pass
+
         safe_name = escape_html(user.first_name)
         await update.message.reply_text(
             f"Hi {safe_name}! I'm your AI coding assistant.\n"
             f"Just tell me what you need — I can read, write, and run code.\n\n"
             f"Working in: {dir_display}\n"
             f"Commands: /new (reset) · /status"
-            f"{sync_line}",
+            f"{sync_line}"
+            f"{schedule_line}",
             parse_mode="HTML",
         )
 
@@ -546,6 +589,50 @@ class MessageOrchestrator:
             f"Verbosity set to <b>{level}</b> ({labels[level]})",
             parse_mode="HTML",
         )
+
+    async def agentic_restart(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Restart the bot process remotely."""
+        import os
+        from pathlib import Path
+        from threading import Timer
+
+        await update.message.reply_text(
+            "🔄 Restarting bot...\n\n"
+            "The bot will be back online in a few seconds.",
+            parse_mode="HTML",
+        )
+
+        # Log the restart event
+        audit_manager = context.bot_data.get("audit_manager")
+        if audit_manager:
+            user = update.effective_user
+            await audit_manager.log_event(
+                user_id=user.id if user else 0,
+                event_type="restart",
+                details={"triggered_by": user.username if user else "unknown"},
+            )
+
+        # Log restart request
+        logger.info(
+            "restart_requested",
+            user_id=update.effective_user.id if update.effective_user else None,
+            username=update.effective_user.username if update.effective_user else None,
+        )
+
+        # Create restart flag file
+        restart_flag = Path.home() / ".claude-telegram-bot-restart"
+        restart_flag.touch()
+
+        # Hard exit after 1 second (let message send first)
+        # The wrapper script or systemd will restart us
+        def force_exit() -> None:
+            os._exit(0)
+
+        timer = Timer(1.0, force_exit)
+        timer.daemon = True
+        timer.start()
 
     def _format_verbose_progress(
         self,
@@ -1229,3 +1316,455 @@ class MessageOrchestrator:
                 args=[project_name],
                 success=True,
             )
+
+    # --- Schedule management ---
+
+    async def agentic_schedule(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Manage scheduled jobs via natural language.
+
+        /schedule                       — list all active jobs
+        /schedule <text>                — add a new job (AI parses time + task)
+        /schedule update <id> <text>    — modify a job (AI re-parses)
+        /schedule remove <id>           — remove a job by ID prefix
+        """
+        scheduler = context.bot_data.get("scheduler")
+        if not scheduler:
+            await update.message.reply_text(
+                "排程功能未啟用。請設定 <code>ENABLE_SCHEDULER=true</code>。",
+                parse_mode="HTML",
+            )
+            return
+
+        raw_text = update.message.text or ""
+        parts = raw_text.split(None, 1)
+        args = parts[1].strip() if len(parts) > 1 else ""
+
+        if not args:
+            await self._schedule_list(update, context, scheduler)
+            return
+
+        lower = args.lower()
+        if lower.startswith("remove ") or lower.startswith("刪除 "):
+            sep = "remove " if lower.startswith("remove ") else "刪除 "
+            job_id_prefix = args[len(sep):].strip()
+            await self._schedule_remove_by_id(update, context, scheduler, job_id_prefix)
+            return
+
+        if lower.startswith("update ") or lower.startswith("修改 "):
+            sep = "update " if lower.startswith("update ") else "修改 "
+            rest = args[len(sep):].strip()
+            rest_parts = rest.split(None, 1)
+            if len(rest_parts) < 2:
+                await update.message.reply_text(
+                    "用法：<code>/schedule update &lt;ID前綴&gt; &lt;新排程描述&gt;</code>\n\n"
+                    "例如：<code>/schedule update a1b2c3d4 每天晚上10點 整理今日工作日誌</code>",
+                    parse_mode="HTML",
+                )
+                return
+            job_id_prefix, new_description = rest_parts[0], rest_parts[1]
+            await self._schedule_update(
+                update, context, scheduler, job_id_prefix, new_description
+            )
+            return
+
+        # Everything else is a natural-language add request
+        await self._schedule_add(update, context, scheduler, args)
+
+    async def _parse_schedule_nl(self, description: str) -> Dict[str, Any]:
+        """Call Claude Haiku to parse natural language into a schedule definition.
+
+        Returns a dict with: name, cron, prompt, valid (bool), error (str|None).
+        """
+        client = anthropic.AsyncAnthropic(
+            api_key=self.settings.anthropic_api_key_str
+        )
+        system = (
+            "You are a scheduling assistant. Parse the user's natural language schedule "
+            "description into a structured JSON object. Reply with ONLY valid JSON, no markdown.\n\n"
+            "Return this exact structure:\n"
+            '{"name": "short descriptive job name (max 50 chars)",\n'
+            ' "cron": "standard cron expression (5 fields)",\n'
+            ' "prompt": "the prompt/task Claude will execute when the job fires",\n'
+            ' "valid": true,\n'
+            ' "error": null}\n\n'
+            "Cron field order: minute hour day-of-month month day-of-week\n"
+            "Common patterns:\n"
+            '  daily at 9am       → "0 9 * * *"\n'
+            '  weekdays at 9am    → "0 9 * * 1-5"\n'
+            '  every hour         → "0 * * * *"\n'
+            '  every Monday 10am  → "0 10 * * 1"\n'
+            '  every 30 minutes   → "*/30 * * * *"\n\n'
+            "If the time/schedule is ambiguous or missing, set valid=false and "
+            "provide an error message in the same language as the user's input."
+        )
+        resp = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=400,
+            system=system,
+            messages=[{"role": "user", "content": description}],
+        )
+        raw = resp.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```", 2)[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        return dict(json.loads(raw.strip()))
+
+    def _build_job_list_parts(
+        self, jobs: List[Dict[str, Any]]
+    ) -> "tuple[str, Optional[InlineKeyboardMarkup]]":
+        """Build (html_text, keyboard) for a job list.
+
+        Shared by _schedule_list and post-operation refreshes.
+        """
+        usage_hint = (
+            "\n\n📖 <b>用法</b>\n"
+            "<code>/schedule</code>  — 查看所有排程\n"
+            "<code>/schedule &lt;描述&gt;</code>  — 新增排程（AI 解析時間與任務）\n"
+            "<code>/schedule update &lt;ID&gt; &lt;描述&gt;</code>  — 修改排程\n"
+            "<code>/schedule remove &lt;ID&gt;</code>  — 刪除排程\n\n"
+            "範例：<code>/schedule 每天早上9點 列出今日 git 提交摘要</code>"
+        )
+        if not jobs:
+            return (
+                "目前沒有排程任務。" + usage_hint,
+                None,
+            )
+        lines: List[str] = ["📋 <b>排程任務</b>\n"]
+        keyboard_rows: List[list] = []  # type: ignore[type-arg]
+        for job in jobs:
+            job_id: str = job["job_id"]
+            name = escape_html(job.get("job_name", "未命名"))
+            cron = escape_html(job.get("cron_expression", ""))
+            next_run = job.get("next_run_time")
+            next_str = next_run.strftime("%m/%d %H:%M") if next_run else "未排定"
+            prompt_preview = escape_html((job.get("prompt", ""))[:60])
+            ellipsis = "..." if len(job.get("prompt", "")) > 60 else ""
+
+            lines.append(f"• <b>{name}</b>")
+            lines.append(f"  排程：<code>{cron}</code>　下次：{next_str}")
+            lines.append(f"  任務：{prompt_preview}{ellipsis}")
+            lines.append(f"  ID：<code>{escape_html(job_id[:8])}</code>\n")
+
+            display_name = job.get("job_name", "")[:15]
+            keyboard_rows.append(
+                [InlineKeyboardButton(
+                    f"🗑 刪除 {display_name}",
+                    callback_data=f"sched:remove:{job_id}",
+                )]
+            )
+        return "\n".join(lines).rstrip() + usage_hint, InlineKeyboardMarkup(keyboard_rows)
+
+    async def _schedule_list(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        scheduler: Any,
+    ) -> None:
+        """Show all active scheduled jobs with inline remove buttons."""
+        jobs = await scheduler.list_jobs()
+        text, markup = self._build_job_list_parts(jobs)
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
+
+    async def _schedule_add(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        scheduler: Any,
+        description: str,
+    ) -> None:
+        """Parse natural language description and prompt user to confirm adding a job."""
+        progress = await update.message.reply_text("🔍 解析排程中...")
+        try:
+            parsed = await self._parse_schedule_nl(description)
+        except Exception as e:
+            logger.warning("Schedule NL parse failed", error=str(e))
+            await progress.edit_text(
+                "❌ 解析失敗，請稍後再試。", parse_mode="HTML"
+            )
+            return
+
+        if not parsed.get("valid"):
+            err = escape_html(str(parsed.get("error", "無法解析時間描述")))
+            await progress.edit_text(
+                f"❌ {err}\n\n"
+                f"範例：<code>/schedule 每天早上9點 列出今日 git 提交摘要</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        # Persist pending data for confirmation callback
+        context.user_data["pending_schedule"] = {
+            "name": parsed["name"],
+            "cron": parsed["cron"],
+            "prompt": parsed["prompt"],
+            "target_chat_ids": [update.effective_chat.id],
+            "created_by": update.effective_user.id,
+        }
+
+        name = escape_html(str(parsed["name"]))
+        cron = escape_html(str(parsed["cron"]))
+        prompt_text = str(parsed["prompt"])
+        prompt_preview = escape_html(prompt_text[:120])
+        ellipsis = "..." if len(prompt_text) > 120 else ""
+
+        await progress.edit_text(
+            f"📋 <b>新排程任務預覽</b>\n\n"
+            f"名稱：<b>{name}</b>\n"
+            f"排程：<code>{cron}</code>\n"
+            f"任務：{prompt_preview}{ellipsis}\n\n"
+            f"確認要新增此排程嗎？",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ 確認", callback_data="sched:confirm_add"),
+                InlineKeyboardButton("❌ 取消", callback_data="sched:cancel_add"),
+            ]]),
+        )
+
+    async def _schedule_remove_by_id(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        scheduler: Any,
+        job_id_prefix: str,
+    ) -> None:
+        """Remove a job matching the given ID prefix (from /schedule remove <id>)."""
+        jobs = await scheduler.list_jobs()
+        matched = [j for j in jobs if j["job_id"].startswith(job_id_prefix)]
+
+        if not matched:
+            await update.message.reply_text(
+                f"找不到 ID 前綴為 <code>{escape_html(job_id_prefix)}</code> 的排程。\n"
+                f"使用 <code>/schedule</code> 查看所有排程 ID。",
+                parse_mode="HTML",
+            )
+            return
+
+        if len(matched) > 1:
+            await update.message.reply_text(
+                f"前綴 <code>{escape_html(job_id_prefix)}</code> 符合多個排程，"
+                f"請提供更長的 ID。",
+                parse_mode="HTML",
+            )
+            return
+
+        job = matched[0]
+        try:
+            await scheduler.remove_job(job["job_id"])
+            deleted_name = escape_html(job.get("job_name", ""))
+            remaining = await scheduler.list_jobs()
+            list_text, list_markup = self._build_job_list_parts(remaining)
+            await update.message.reply_text(
+                f"🗑 已刪除排程：<b>{deleted_name}</b>\n\n{list_text}",
+                parse_mode="HTML",
+                reply_markup=list_markup,
+            )
+        except Exception as e:
+            await update.message.reply_text(
+                f"❌ 刪除失敗：{escape_html(str(e))}", parse_mode="HTML"
+            )
+
+    async def _schedule_update(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        scheduler: Any,
+        job_id_prefix: str,
+        description: str,
+    ) -> None:
+        """Parse new natural language description and prompt user to confirm updating a job."""
+        jobs = await scheduler.list_jobs()
+        matched = [j for j in jobs if j["job_id"].startswith(job_id_prefix)]
+
+        if not matched:
+            await update.message.reply_text(
+                f"找不到 ID 前綴為 <code>{escape_html(job_id_prefix)}</code> 的排程。\n"
+                f"使用 <code>/schedule</code> 查看所有排程 ID。",
+                parse_mode="HTML",
+            )
+            return
+
+        if len(matched) > 1:
+            await update.message.reply_text(
+                f"前綴 <code>{escape_html(job_id_prefix)}</code> 符合多個排程，"
+                f"請提供更長的 ID。",
+                parse_mode="HTML",
+            )
+            return
+
+        old_job = matched[0]
+        progress = await update.message.reply_text("🔍 解析新排程中...")
+        try:
+            # Provide existing job context so the parser can keep the original
+            # prompt/name when the user only wants to change the schedule time.
+            enriched_description = (
+                f"現有排程名稱：{old_job.get('job_name', '')}\n"
+                f"現有任務內容：{old_job.get('prompt', '')}\n\n"
+                f"修改請求：{description}\n\n"
+                f"注意：如果修改請求只提到時間變更，請保留現有的任務名稱和內容（prompt），只更新時間（cron）。"
+            )
+            parsed = await self._parse_schedule_nl(enriched_description)
+        except Exception as e:
+            logger.warning("Schedule NL parse failed", error=str(e))
+            await progress.edit_text("❌ 解析失敗，請稍後再試。", parse_mode="HTML")
+            return
+
+        if not parsed.get("valid"):
+            err = escape_html(str(parsed.get("error", "無法解析時間描述")))
+            await progress.edit_text(
+                f"❌ {err}\n\n"
+                f"範例：<code>/schedule update {escape_html(job_id_prefix[:8])} 每天晚上10點 整理工作日誌</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        context.user_data["pending_schedule_update"] = {
+            "old_job_id": old_job["job_id"],
+            "old_name": old_job.get("job_name", ""),
+            "old_cron": old_job.get("cron_expression", ""),
+            "name": parsed["name"],
+            "cron": parsed["cron"],
+            "prompt": parsed["prompt"],
+            "target_chat_ids": [update.effective_chat.id],
+            "created_by": update.effective_user.id,
+        }
+
+        old_name = escape_html(old_job.get("job_name", ""))
+        old_cron = escape_html(old_job.get("cron_expression", ""))
+        new_name = escape_html(str(parsed["name"]))
+        new_cron = escape_html(str(parsed["cron"]))
+        prompt_text = str(parsed["prompt"])
+        prompt_preview = escape_html(prompt_text[:100])
+        ellipsis = "..." if len(prompt_text) > 100 else ""
+
+        await progress.edit_text(
+            f"✏️ <b>修改排程預覽</b>\n\n"
+            f"原任務：<b>{old_name}</b> — <code>{old_cron}</code>\n"
+            f"　　↓\n"
+            f"新任務：<b>{new_name}</b> — <code>{new_cron}</code>\n"
+            f"任務內容：{prompt_preview}{ellipsis}\n\n"
+            f"確認修改？",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ 確認修改", callback_data="sched:confirm_update"),
+                InlineKeyboardButton("❌ 取消", callback_data="sched:cancel_update"),
+            ]]),
+        )
+
+    async def _agentic_schedule_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle sched: inline keyboard callbacks.
+
+        Supported actions:
+          sched:confirm_add     — execute pending add, then show updated list
+          sched:cancel_add      — discard pending add
+          sched:confirm_update  — execute pending update (remove old + add new), show list
+          sched:cancel_update   — discard pending update
+          sched:remove:<id>     — remove job, edit message to show remaining list
+        """
+        query = update.callback_query
+        await query.answer()
+
+        data = query.data or ""
+        parts = data.split(":", 2)
+        if len(parts) < 2:
+            return
+        action = parts[1]
+
+        scheduler = context.bot_data.get("scheduler")
+        if not scheduler:
+            await query.edit_message_text("排程功能未啟用。")
+            return
+
+        if action == "confirm_add":
+            pending = context.user_data.pop("pending_schedule", None)
+            if not pending:
+                await query.edit_message_text("❌ 排程資料已過期，請重新操作。")
+                return
+            try:
+                job_id = await scheduler.add_job(
+                    job_name=pending["name"],
+                    cron_expression=pending["cron"],
+                    prompt=pending["prompt"],
+                    target_chat_ids=pending["target_chat_ids"],
+                    created_by=pending["created_by"],
+                )
+                name = escape_html(pending["name"])
+                cron = escape_html(pending["cron"])
+                await query.edit_message_text(
+                    f"✅ <b>排程已新增並啟用</b>\n\n"
+                    f"名稱：<b>{name}</b>\n"
+                    f"排程：<code>{cron}</code>\n"
+                    f"ID：<code>{escape_html(job_id[:8])}</code>",
+                    parse_mode="HTML",
+                )
+                jobs = await scheduler.list_jobs()
+                list_text, list_markup = self._build_job_list_parts(jobs)
+                await query.message.reply_text(
+                    list_text, parse_mode="HTML", reply_markup=list_markup
+                )
+            except Exception as e:
+                await query.edit_message_text(
+                    f"❌ 新增失敗：{escape_html(str(e))}", parse_mode="HTML"
+                )
+
+        elif action == "cancel_add":
+            context.user_data.pop("pending_schedule", None)
+            await query.edit_message_text("已取消。")
+
+        elif action == "confirm_update":
+            pending = context.user_data.pop("pending_schedule_update", None)
+            if not pending:
+                await query.edit_message_text("❌ 排程資料已過期，請重新操作。")
+                return
+            try:
+                await scheduler.remove_job(pending["old_job_id"])
+                job_id = await scheduler.add_job(
+                    job_name=pending["name"],
+                    cron_expression=pending["cron"],
+                    prompt=pending["prompt"],
+                    target_chat_ids=pending["target_chat_ids"],
+                    created_by=pending["created_by"],
+                )
+                old_name = escape_html(pending["old_name"])
+                new_name = escape_html(pending["name"])
+                new_cron = escape_html(pending["cron"])
+                await query.edit_message_text(
+                    f"✅ <b>排程已修改並重新啟用</b>\n\n"
+                    f"原任務：<s>{old_name}</s>\n"
+                    f"新名稱：<b>{new_name}</b>\n"
+                    f"新排程：<code>{new_cron}</code>\n"
+                    f"新 ID：<code>{escape_html(job_id[:8])}</code>",
+                    parse_mode="HTML",
+                )
+                jobs = await scheduler.list_jobs()
+                list_text, list_markup = self._build_job_list_parts(jobs)
+                await query.message.reply_text(
+                    list_text, parse_mode="HTML", reply_markup=list_markup
+                )
+            except Exception as e:
+                await query.edit_message_text(
+                    f"❌ 修改失敗：{escape_html(str(e))}", parse_mode="HTML"
+                )
+
+        elif action == "cancel_update":
+            context.user_data.pop("pending_schedule_update", None)
+            await query.edit_message_text("已取消修改。")
+
+        elif action == "remove" and len(parts) == 3:
+            job_id = parts[2]
+            try:
+                await scheduler.remove_job(job_id)
+                # Edit the list message in-place to reflect the removal
+                remaining = await scheduler.list_jobs()
+                list_text, list_markup = self._build_job_list_parts(remaining)
+                await query.edit_message_text(
+                    list_text, parse_mode="HTML", reply_markup=list_markup
+                )
+            except Exception as e:
+                await query.edit_message_text(
+                    f"❌ 刪除失敗：{escape_html(str(e))}", parse_mode="HTML"
+                )

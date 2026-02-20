@@ -7,6 +7,7 @@ Features:
 - Bash directory boundary enforcement
 """
 
+import fnmatch
 import shlex
 from collections import defaultdict
 from pathlib import Path
@@ -64,6 +65,18 @@ _READ_ONLY_COMMANDS: Set[str] = {
 
 # Actions / expressions that make ``find`` a filesystem-modifying command
 _FIND_MUTATING_ACTIONS: Set[str] = {"-delete", "-exec", "-execdir", "-ok", "-okdir"}
+
+
+def _tool_name_matches(tool_name: str, pattern: str) -> bool:
+    """Check if tool name matches pattern (supports wildcards).
+
+    Examples:
+        _tool_name_matches("Read", "Read") -> True
+        _tool_name_matches("mcp__sqlite__list_tables", "mcp__sqlite__*") -> True
+        _tool_name_matches("Bash", "mcp__*") -> False
+    """
+    # Case-insensitive matching with wildcard support
+    return fnmatch.fnmatch(tool_name.lower(), pattern.lower())
 
 
 def check_bash_directory_boundary(
@@ -171,30 +184,43 @@ class ToolMonitor:
                 user_id=user_id,
             )
 
-        # Check if tool is allowed
+        # Check if tool is allowed (case-insensitive with wildcard support)
         if (
             not self.disable_tool_validation
             and hasattr(self.config, "claude_allowed_tools")
             and self.config.claude_allowed_tools
         ):
-            if tool_name not in self.config.claude_allowed_tools:
+            # Check if tool matches any allowed pattern (supports wildcards)
+            is_allowed = any(
+                _tool_name_matches(tool_name, pattern)
+                for pattern in self.config.claude_allowed_tools
+            )
+
+            if not is_allowed:
                 violation = {
                     "type": "disallowed_tool",
                     "tool_name": tool_name,
                     "user_id": user_id,
                     "working_directory": str(working_directory),
+                    "allowed_tools": self.config.claude_allowed_tools,
                 }
                 self.security_violations.append(violation)
                 logger.warning("Tool not allowed", **violation)
                 return False, f"Tool not allowed: {tool_name}"
 
-        # Check if tool is explicitly disallowed
+        # Check if tool is explicitly disallowed (case-insensitive with wildcard support)
         if (
             not self.disable_tool_validation
             and hasattr(self.config, "claude_disallowed_tools")
             and self.config.claude_disallowed_tools
         ):
-            if tool_name in self.config.claude_disallowed_tools:
+            # Check if tool matches any disallowed pattern (supports wildcards)
+            is_disallowed = any(
+                _tool_name_matches(tool_name, pattern)
+                for pattern in self.config.claude_disallowed_tools
+            )
+
+            if is_disallowed:
                 violation = {
                     "type": "explicitly_disallowed_tool",
                     "tool_name": tool_name,
@@ -329,13 +355,17 @@ class ToolMonitor:
         }
 
     def is_tool_allowed(self, tool_name: str) -> bool:
-        """Check if tool is allowed without validation."""
+        """Check if tool is allowed without validation (case-insensitive, supports wildcards)."""
         # Check allowed list
         if (
             hasattr(self.config, "claude_allowed_tools")
             and self.config.claude_allowed_tools
         ):
-            if tool_name not in self.config.claude_allowed_tools:
+            is_allowed = any(
+                _tool_name_matches(tool_name, pattern)
+                for pattern in self.config.claude_allowed_tools
+            )
+            if not is_allowed:
                 return False
 
         # Check disallowed list
@@ -343,7 +373,11 @@ class ToolMonitor:
             hasattr(self.config, "claude_disallowed_tools")
             and self.config.claude_disallowed_tools
         ):
-            if tool_name in self.config.claude_disallowed_tools:
+            is_disallowed = any(
+                _tool_name_matches(tool_name, pattern)
+                for pattern in self.config.claude_disallowed_tools
+            )
+            if is_disallowed:
                 return False
 
         return True
