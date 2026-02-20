@@ -1,15 +1,15 @@
 """Tests for repository implementations."""
 
 import tempfile
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from src.storage.database import DatabaseManager
 from src.storage.models import (
-    AuditLogModel,
     MessageModel,
+    ProjectThreadModel,
     SessionModel,
     ToolUsageModel,
     UserModel,
@@ -18,6 +18,7 @@ from src.storage.repositories import (
     AnalyticsRepository,
     AuditLogRepository,
     MessageRepository,
+    ProjectThreadRepository,
     SessionRepository,
     ToolUsageRepository,
     UserRepository,
@@ -71,6 +72,12 @@ async def analytics_repo(db_manager):
     return AnalyticsRepository(db_manager)
 
 
+@pytest.fixture
+async def project_thread_repo(db_manager):
+    """Create project thread repository."""
+    return ProjectThreadRepository(db_manager)
+
+
 class TestUserRepository:
     """Test user repository."""
 
@@ -79,8 +86,8 @@ class TestUserRepository:
         user = UserModel(
             user_id=12345,
             telegram_username="testuser",
-            first_seen=datetime.utcnow(),
-            last_active=datetime.utcnow(),
+            first_seen=datetime.now(UTC),
+            last_active=datetime.now(UTC),
             is_allowed=True,
         )
 
@@ -100,8 +107,8 @@ class TestUserRepository:
         user = UserModel(
             user_id=12346,
             telegram_username="testuser2",
-            first_seen=datetime.utcnow(),
-            last_active=datetime.utcnow(),
+            first_seen=datetime.now(UTC),
+            last_active=datetime.now(UTC),
             is_allowed=False,
             total_cost=10.5,
             message_count=5,
@@ -125,8 +132,8 @@ class TestUserRepository:
         allowed_user = UserModel(
             user_id=12347,
             telegram_username="allowed",
-            first_seen=datetime.utcnow(),
-            last_active=datetime.utcnow(),
+            first_seen=datetime.now(UTC),
+            last_active=datetime.now(UTC),
             is_allowed=True,
         )
         await user_repo.create_user(allowed_user)
@@ -135,8 +142,8 @@ class TestUserRepository:
         disallowed_user = UserModel(
             user_id=12348,
             telegram_username="disallowed",
-            first_seen=datetime.utcnow(),
-            last_active=datetime.utcnow(),
+            first_seen=datetime.now(UTC),
+            last_active=datetime.now(UTC),
             is_allowed=False,
         )
         await user_repo.create_user(disallowed_user)
@@ -156,8 +163,8 @@ class TestSessionRepository:
         user = UserModel(
             user_id=12349,
             telegram_username="sessionuser",
-            first_seen=datetime.utcnow(),
-            last_active=datetime.utcnow(),
+            first_seen=datetime.now(UTC),
+            last_active=datetime.now(UTC),
             is_allowed=True,
         )
         await user_repo.create_user(user)
@@ -167,8 +174,8 @@ class TestSessionRepository:
             session_id="test-session-123",
             user_id=12349,
             project_path="/test/project",
-            created_at=datetime.utcnow(),
-            last_used=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            last_used=datetime.now(UTC),
             total_cost=5.0,
             total_turns=3,
             message_count=2,
@@ -189,8 +196,8 @@ class TestSessionRepository:
         user = UserModel(
             user_id=12350,
             telegram_username="multisessionuser",
-            first_seen=datetime.utcnow(),
-            last_active=datetime.utcnow(),
+            first_seen=datetime.now(UTC),
+            last_active=datetime.now(UTC),
             is_allowed=True,
         )
         await user_repo.create_user(user)
@@ -201,8 +208,8 @@ class TestSessionRepository:
                 session_id=f"test-session-{i}",
                 user_id=12350,
                 project_path=f"/test/project{i}",
-                created_at=datetime.utcnow(),
-                last_used=datetime.utcnow(),
+                created_at=datetime.now(UTC),
+                last_used=datetime.now(UTC),
             )
             await session_repo.create_session(session)
 
@@ -217,8 +224,8 @@ class TestSessionRepository:
         user = UserModel(
             user_id=12351,
             telegram_username="cleanupuser",
-            first_seen=datetime.utcnow(),
-            last_active=datetime.utcnow(),
+            first_seen=datetime.now(UTC),
+            last_active=datetime.now(UTC),
             is_allowed=True,
         )
         await user_repo.create_user(user)
@@ -228,8 +235,8 @@ class TestSessionRepository:
             session_id="old-session",
             user_id=12351,
             project_path="/test/old",
-            created_at=datetime.utcnow() - timedelta(days=35),
-            last_used=datetime.utcnow() - timedelta(days=35),
+            created_at=datetime.now(UTC) - timedelta(days=35),
+            last_used=datetime.now(UTC) - timedelta(days=35),
         )
         await session_repo.create_session(old_session)
 
@@ -238,8 +245,8 @@ class TestSessionRepository:
             session_id="recent-session",
             user_id=12351,
             project_path="/test/recent",
-            created_at=datetime.utcnow(),
-            last_used=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            last_used=datetime.now(UTC),
         )
         await session_repo.create_session(recent_session)
 
@@ -262,8 +269,8 @@ class TestMessageRepository:
         user = UserModel(
             user_id=12352,
             telegram_username="messageuser",
-            first_seen=datetime.utcnow(),
-            last_active=datetime.utcnow(),
+            first_seen=datetime.now(UTC),
+            last_active=datetime.now(UTC),
             is_allowed=True,
         )
         await user_repo.create_user(user)
@@ -272,8 +279,8 @@ class TestMessageRepository:
             session_id="message-session",
             user_id=12352,
             project_path="/test/messages",
-            created_at=datetime.utcnow(),
-            last_used=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            last_used=datetime.now(UTC),
         )
         await session_repo.create_session(session)
 
@@ -281,7 +288,7 @@ class TestMessageRepository:
         message = MessageModel(
             session_id="message-session",
             user_id=12352,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
             prompt="Test prompt",
             response="Test response",
             cost=0.05,
@@ -298,6 +305,107 @@ class TestMessageRepository:
         assert messages[0].response == "Test response"
 
 
+class TestProjectThreadRepository:
+    """Test project thread repository."""
+
+    async def test_upsert_and_lookup(self, project_thread_repo):
+        """Upsert creates mapping and lookup resolves it."""
+        mapping = await project_thread_repo.upsert_mapping(
+            project_slug="app1",
+            chat_id=-1001234567890,
+            message_thread_id=321,
+            topic_name="App One",
+        )
+
+        assert isinstance(mapping, ProjectThreadModel)
+        assert mapping.project_slug == "app1"
+        assert mapping.message_thread_id == 321
+
+        lookup = await project_thread_repo.get_by_chat_thread(-1001234567890, 321)
+        assert lookup is not None
+        assert lookup.project_slug == "app1"
+
+    async def test_deactivate_missing_projects(self, project_thread_repo):
+        """Mappings not in active set are deactivated."""
+        await project_thread_repo.upsert_mapping(
+            project_slug="app1",
+            chat_id=-1001234567890,
+            message_thread_id=111,
+            topic_name="App 1",
+        )
+        await project_thread_repo.upsert_mapping(
+            project_slug="app2",
+            chat_id=-1001234567890,
+            message_thread_id=222,
+            topic_name="App 2",
+        )
+
+        changed = await project_thread_repo.deactivate_missing_projects(
+            chat_id=-1001234567890,
+            active_project_slugs=["app1"],
+        )
+
+        assert changed == 1
+        inactive_mapping = await project_thread_repo.get_by_chat_project(
+            -1001234567890, "app2"
+        )
+        assert inactive_mapping is not None
+        assert inactive_mapping.is_active is False
+
+    async def test_list_stale_active_mappings(self, project_thread_repo):
+        """Returns only active mappings not in enabled project set."""
+        await project_thread_repo.upsert_mapping(
+            project_slug="app1",
+            chat_id=-1001234567890,
+            message_thread_id=111,
+            topic_name="App 1",
+            is_active=True,
+        )
+        await project_thread_repo.upsert_mapping(
+            project_slug="app2",
+            chat_id=-1001234567890,
+            message_thread_id=222,
+            topic_name="App 2",
+            is_active=True,
+        )
+        await project_thread_repo.upsert_mapping(
+            project_slug="app3",
+            chat_id=-1001234567890,
+            message_thread_id=333,
+            topic_name="App 3",
+            is_active=False,
+        )
+
+        stale = await project_thread_repo.list_stale_active_mappings(
+            chat_id=-1001234567890,
+            active_project_slugs=["app1"],
+        )
+
+        assert len(stale) == 1
+        assert stale[0].project_slug == "app2"
+
+    async def test_set_active_updates_flag(self, project_thread_repo):
+        """set_active toggles mapping active flag."""
+        await project_thread_repo.upsert_mapping(
+            project_slug="app1",
+            chat_id=-1001234567890,
+            message_thread_id=111,
+            topic_name="App 1",
+            is_active=True,
+        )
+
+        changed = await project_thread_repo.set_active(
+            chat_id=-1001234567890,
+            project_slug="app1",
+            is_active=False,
+        )
+
+        assert changed == 1
+        mapping = await project_thread_repo.get_by_chat_project(-1001234567890, "app1")
+        assert mapping is not None
+        assert mapping.is_active is False
+
+
 class TestToolUsageRepository:
     """Test tool usage repository."""
 
@@ -307,8 +415,8 @@ class TestToolUsageRepository:
         user = UserModel(
             user_id=12353,
             telegram_username="tooluser",
-            first_seen=datetime.utcnow(),
-            last_active=datetime.utcnow(),
+            first_seen=datetime.now(UTC),
+            last_active=datetime.now(UTC),
             is_allowed=True,
         )
         await user_repo.create_user(user)
@@ -317,8 +425,8 @@ class TestToolUsageRepository:
             session_id="tool-session",
             user_id=12353,
             project_path="/test/tools",
-            created_at=datetime.utcnow(),
-            last_used=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            last_used=datetime.now(UTC),
         )
         await session_repo.create_session(session)
 
@@ -327,7 +435,7 @@ class TestToolUsageRepository:
             session_id="tool-session",
             tool_name="Read",
             tool_input={"file_path": "/test/file.py"},
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
             success=True,
         )
 
@@ -346,8 +454,8 @@ class TestToolUsageRepository:
         user = UserModel(
             user_id=12354,
             telegram_username="statsuser",
-            first_seen=datetime.utcnow(),
-            last_active=datetime.utcnow(),
+            first_seen=datetime.now(UTC),
+            last_active=datetime.now(UTC),
             is_allowed=True,
         )
         await user_repo.create_user(user)
@@ -356,8 +464,8 @@ class TestToolUsageRepository:
             session_id="stats-session",
             user_id=12354,
             project_path="/test/stats",
-            created_at=datetime.utcnow(),
-            last_used=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            last_used=datetime.now(UTC),
         )
         await session_repo.create_session(session)
 
@@ -367,7 +475,7 @@ class TestToolUsageRepository:
             tool_usage = ToolUsageModel(
                 session_id="stats-session",
                 tool_name=tool,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(UTC),
                 success=True,
             )
             await tool_repo.save_tool_usage(tool_usage)
@@ -393,8 +501,8 @@ class TestAnalyticsRepository:
         user = UserModel(
             user_id=12355,
             telegram_username="analyticsuser",
-            first_seen=datetime.utcnow(),
-            last_active=datetime.utcnow(),
+            first_seen=datetime.now(UTC),
+            last_active=datetime.now(UTC),
             is_allowed=True,
         )
         await user_repo.create_user(user)
@@ -403,8 +511,8 @@ class TestAnalyticsRepository:
             session_id="analytics-session",
             user_id=12355,
             project_path="/test/analytics",
-            created_at=datetime.utcnow(),
-            last_used=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            last_used=datetime.now(UTC),
         )
         await session_repo.create_session(session)
 
@@ -413,7 +521,7 @@ class TestAnalyticsRepository:
             message = MessageModel(
                 session_id="analytics-session",
                 user_id=12355,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(UTC),
                 prompt=f"Test prompt {i}",
                 response=f"Test response {i}",
                 cost=0.1,

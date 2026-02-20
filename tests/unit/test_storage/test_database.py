@@ -53,6 +53,7 @@ class TestDatabaseManager:
                 "audit_log",
                 "user_tokens",
                 "cost_tracking",
+                "project_threads",
                 "schema_version",
             ]
 
@@ -70,7 +71,8 @@ class TestDatabaseManager:
         """Test that indexes are created."""
         async with db_manager.get_connection() as conn:
             cursor = await conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'"
+                "SELECT name FROM sqlite_master "
+                "WHERE type='index' AND name LIKE 'idx_%'"
             )
             indexes = [row[0] for row in await cursor.fetchall()]
 
@@ -82,6 +84,8 @@ class TestDatabaseManager:
                 "idx_audit_log_user_id",
                 "idx_audit_log_timestamp",
                 "idx_cost_tracking_user_date",
+                "idx_project_threads_chat_active",
+                "idx_project_threads_slug",
             ]
 
             for index in expected_indexes:

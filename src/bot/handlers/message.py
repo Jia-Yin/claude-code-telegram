@@ -94,30 +94,30 @@ def _format_error_message(error_str: str) -> str:
         return error_str
     elif "no conversation found" in error_str.lower():
         return (
-            f"🔄 <b>Session Not Found</b>\n\n"
-            f"The Claude session could not be found or has expired.\n\n"
-            f"<b>What you can do:</b>\n"
-            f"• Use /new to start a fresh session\n"
-            f"• Try your request again\n"
-            f"• Use /status to check your current session"
+            "🔄 <b>Session Not Found</b>\n\n"
+            "The Claude session could not be found or has expired.\n\n"
+            "<b>What you can do:</b>\n"
+            "• Use /new to start a fresh session\n"
+            "• Try your request again\n"
+            "• Use /status to check your current session"
         )
     elif "rate limit" in error_str.lower():
         return (
-            f"⏱️ <b>Rate Limit Reached</b>\n\n"
-            f"Too many requests in a short time period.\n\n"
-            f"<b>What you can do:</b>\n"
-            f"• Wait a moment before trying again\n"
-            f"• Use simpler requests\n"
-            f"• Check your current usage with /status"
+            "⏱️ <b>Rate Limit Reached</b>\n\n"
+            "Too many requests in a short time period.\n\n"
+            "<b>What you can do:</b>\n"
+            "• Wait a moment before trying again\n"
+            "• Use simpler requests\n"
+            "• Check your current usage with /status"
         )
     elif "timeout" in error_str.lower():
         return (
-            f"⏰ <b>Request Timeout</b>\n\n"
-            f"Your request took too long to process and timed out.\n\n"
-            f"<b>What you can do:</b>\n"
-            f"• Try breaking down your request into smaller parts\n"
-            f"• Use simpler commands\n"
-            f"• Try again in a moment"
+            "⏰ <b>Request Timeout</b>\n\n"
+            "Your request took too long to process and timed out.\n\n"
+            "<b>What you can do:</b>\n"
+            "• Try breaking down your request into smaller parts\n"
+            "• Use simpler commands\n"
+            "• Try again in a moment"
         )
     else:
         # Generic error handling
@@ -192,6 +192,10 @@ async def handle_text_message(
         # Get existing session ID
         session_id = context.user_data.get("claude_session_id")
 
+        # Check if /new was used — skip auto-resume for this first message.
+        # Flag is only cleared after a successful run so retries keep the intent.
+        force_new = bool(context.user_data.get("force_new_session"))
+
         # Enhanced stream updates handler with progress tracking
         async def stream_handler(update_obj):
             try:
@@ -209,7 +213,12 @@ async def handle_text_message(
                 user_id=user_id,
                 session_id=session_id,
                 on_stream=stream_handler,
+                force_new=force_new,
             )
+
+            # New session created successfully — clear the one-shot flag
+            if force_new:
+                context.user_data["force_new_session"] = False
 
             # Update session ID
             context.user_data["claude_session_id"] = claude_response.session_id
@@ -364,7 +373,7 @@ async def handle_text_message(
         # Clean up progress message if it exists
         try:
             await progress_msg.delete()
-        except:
+        except Exception:
             pass
 
         error_msg = f"❌ <b>Error processing message</b>\n\n{escape_html(str(e))}"
@@ -596,7 +605,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except Exception as e:
         try:
             await progress_msg.delete()
-        except:
+        except Exception:
             pass
 
         error_msg = f"❌ <b>Error processing file</b>\n\n{escape_html(str(e))}"
@@ -817,17 +826,17 @@ async def _generate_placeholder_response(
 
     elif any(word in message_lower for word in ["help", "how", "what", "explain"]):
         response_text = (
-            f"🤖 <b>Claude Code Response</b> <i>(Placeholder)</i>\n\n"
-            f"I'm here to help! Try using /help for available commands.\n\n"
-            f"<b>What I can do now:</b>\n"
-            f"• Navigate directories (/cd, /ls, /pwd)\n"
-            f"• Show projects (/projects)\n"
-            f"• Manage sessions (/new, /status)\n\n"
-            f"<b>Coming soon:</b>\n"
-            f"• Full Claude Code integration\n"
-            f"• Code generation and editing\n"
-            f"• File operations\n"
-            f"• Advanced programming assistance"
+            "🤖 <b>Claude Code Response</b> <i>(Placeholder)</i>\n\n"
+            "I'm here to help! Try using /help for available commands.\n\n"
+            "<b>What I can do now:</b>\n"
+            "• Navigate directories (/cd, /ls, /pwd)\n"
+            "• Show projects (/projects)\n"
+            "• Manage sessions (/new, /status)\n\n"
+            "<b>Coming soon:</b>\n"
+            "• Full Claude Code integration\n"
+            "• Code generation and editing\n"
+            "• File operations\n"
+            "• Advanced programming assistance"
         )
 
     else:

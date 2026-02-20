@@ -2,7 +2,7 @@
 
 import re
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import List, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -30,7 +30,9 @@ class ResponseFormatter:
         """Initialize formatter with settings."""
         self.settings = settings
         self.max_message_length = 4000  # Telegram limit is 4096, leave some buffer
-        self.max_code_block_length = 3000  # Max length for code blocks
+        self.max_code_block_length = (
+            15000  # Max length for individual code blocks before splitting
+        )
 
     def format_claude_response(
         self, text: str, context: Optional[dict] = None
@@ -211,7 +213,6 @@ class ResponseFormatter:
         lines = text.split("\n")
         current_section = {"type": "text", "content": "", "start_line": 0}
         in_code_block = False
-        code_start = 0
 
         for i, line in enumerate(lines):
             # Check for code block markers
@@ -221,7 +222,6 @@ class ResponseFormatter:
                     if current_section["content"].strip():
                         sections.append(current_section)
                     in_code_block = True
-                    code_start = i
                     current_section = {
                         "type": "code_block",
                         "content": line + "\n",

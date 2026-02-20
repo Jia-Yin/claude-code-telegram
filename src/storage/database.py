@@ -8,7 +8,9 @@ Features:
 """
 
 import asyncio
+import sqlite3
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, List, Tuple
 
@@ -16,6 +18,16 @@ import aiosqlite
 import structlog
 
 logger = structlog.get_logger()
+
+
+# Python 3.12+: sqlite3's default datetime adapter is deprecated.
+# Register explicit adapters/converters once at import time to avoid warnings
+# and keep consistent ISO-8601 persistence for datetime values.
+sqlite3.register_adapter(datetime, lambda value: value.isoformat())
+sqlite3.register_converter("TIMESTAMP", lambda b: datetime.fromisoformat(b.decode()))
+sqlite3.register_converter("DATETIME", lambda b: datetime.fromisoformat(b.decode()))
+# Keep DATE columns as raw ISO strings (matches existing model expectations).
+sqlite3.register_converter("DATE", lambda b: b.decode())
 
 # Initial schema migration
 INITIAL_SCHEMA = """
@@ -158,7 +170,9 @@ class DatabaseManager:
 
     async def _run_migrations(self):
         """Run database migrations."""
-        async with aiosqlite.connect(self.database_path) as conn:
+        async with aiosqlite.connect(
+            self.database_path, detect_types=sqlite3.PARSE_DECLTYPES
+        ) as conn:
             conn.row_factory = aiosqlite.Row
 
             # Enable foreign keys
@@ -273,6 +287,29 @@ class DatabaseManager:
                 PRAGMA journal_mode=WAL;
                 """,
             ),
+            (
+                4,
+                """
+                -- Project thread mapping for strict forum-topic routing
+                CREATE TABLE IF NOT EXISTS project_threads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_slug TEXT NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    message_thread_id INTEGER NOT NULL,
+                    topic_name TEXT NOT NULL,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(chat_id, project_slug),
+                    UNIQUE(chat_id, message_thread_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_project_threads_chat_active
+                    ON project_threads(chat_id, is_active);
+                CREATE INDEX IF NOT EXISTS idx_project_threads_slug
+                    ON project_threads(project_slug);
+                """,
+            ),
         ]
 
     async def _init_pool(self):
@@ -281,7 +318,9 @@ class DatabaseManager:
 
         async with self._pool_lock:
             for _ in range(self._pool_size):
-                conn = await aiosqlite.connect(self.database_path)
+                conn = await aiosqlite.connect(
+                    self.database_path, detect_types=sqlite3.PARSE_DECLTYPES
+                )
                 conn.row_factory = aiosqlite.Row
                 await conn.execute("PRAGMA foreign_keys = ON")
                 self._connection_pool.append(conn)
@@ -293,7 +332,9 @@ class DatabaseManager:
             if self._connection_pool:
                 conn = self._connection_pool.pop()
             else:
-                conn = await aiosqlite.connect(self.database_path)
+                conn = await aiosqlite.connect(
+                    self.database_path, detect_types=sqlite3.PARSE_DECLTYPES
+                )
                 conn.row_factory = aiosqlite.Row
                 await conn.execute("PRAGMA foreign_keys = ON")
 

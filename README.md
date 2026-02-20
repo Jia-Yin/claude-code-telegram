@@ -85,7 +85,8 @@ The bot supports two interaction modes:
 
 The default conversational mode. Just talk to Claude naturally -- no special commands required.
 
-**Commands:** `/start`, `/new`, `/status`, `/verbose`
+**Commands:** `/start`, `/new`, `/status`, `/verbose`, `/repo`
+If `ENABLE_PROJECT_THREADS=true`: `/sync_threads`
 
 ```
 You: What files are in this project?
@@ -115,11 +116,36 @@ Use `/verbose 0|1|2` to control how much background activity is shown:
 | **1** (normal, default) | Tool names + reasoning snippets in real-time |
 | **2** (detailed) | Tool names with inputs + longer reasoning text |
 
+#### GitHub Workflow
+
+Claude Code already knows how to use `gh` CLI and `git`. Authenticate on your server with `gh auth login`, then work with repos conversationally:
+
+```
+You: List my repos related to monitoring
+Bot: [Claude runs gh repo list, shows results]
+
+You: Clone the uptime one
+Bot: [Claude runs gh repo clone, clones into workspace]
+
+You: /repo
+Bot: 📦 uptime-monitor/  ◀
+     📁 other-project/
+
+You: Show me the open issues
+Bot: [Claude runs gh issue list]
+
+You: Create a fix branch and push it
+Bot: [Claude creates branch, commits, pushes]
+```
+
+Use `/repo` to list cloned repos in your workspace, or `/repo <name>` to switch directories (sessions auto-resume).
+
 ### Classic Mode
 
 Set `AGENTIC_MODE=false` to enable the full 13-command terminal-like interface with directory navigation, inline keyboards, quick actions, git integration, and session export.
 
-**Commands:** `/start`, `/help`, `/new`, `/continue`, `/end`, `/status`, `/cd`, `/ls`, `/pwd`, `/projects`, `/export`, `/actions`, `/git`
+**Commands:** `/start`, `/help`, `/new`, `/continue`, `/end`, `/status`, `/cd`, `/ls`, `/pwd`, `/projects`, `/export`, `/actions`, `/git`  
+If `ENABLE_PROJECT_THREADS=true`: `/sync_threads`
 
 ```
 You: /cd my-web-app
@@ -188,7 +214,6 @@ ALLOWED_USERS=123456789          # Comma-separated Telegram user IDs
 
 ```bash
 # Claude
-USE_SDK=true                     # Python SDK (default) or CLI subprocess
 ANTHROPIC_API_KEY=sk-ant-...     # API key (optional if using CLI auth)
 CLAUDE_MAX_COST_PER_USER=10.0    # Spending limit per user (USD)
 CLAUDE_TIMEOUT_SECONDS=300       # Operation timeout
@@ -224,6 +249,27 @@ ENABLE_SCHEDULER=false           # Enable cron job scheduler
 # Notifications
 NOTIFICATION_CHAT_IDS=123,456    # Default chat IDs for proactive notifications
 ```
+
+### Project Threads Mode
+
+```bash
+# Enable strict topic routing by project
+ENABLE_PROJECT_THREADS=true
+
+# Mode: private (default) or group
+PROJECT_THREADS_MODE=private
+
+# YAML registry file (see config/projects.example.yaml)
+PROJECTS_CONFIG_PATH=config/projects.yaml
+
+# Required only when PROJECT_THREADS_MODE=group
+PROJECT_THREADS_CHAT_ID=-1001234567890
+```
+
+In strict mode, only `/start` and `/sync_threads` work outside mapped project topics.
+In private mode, `/start` auto-syncs project topics for your private bot chat.
+To use topics with your bot, enable them in BotFather:
+`Bot Settings -> Threaded mode`.
 
 > **Full reference:** See [docs/configuration.md](docs/configuration.md) and [`.env.example`](.env.example).
 

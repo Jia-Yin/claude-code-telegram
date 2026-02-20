@@ -14,7 +14,6 @@ from src import __version__
 from src.bot.core import ClaudeCodeBot
 from src.claude import (
     ClaudeIntegration,
-    ClaudeProcessManager,
     SessionManager,
     ToolMonitor,
 )
@@ -26,6 +25,7 @@ from src.events.handlers import AgentHandler
 from src.events.middleware import EventSecurityMiddleware
 from src.exceptions import ConfigurationError
 from src.notifications.service import NotificationService
+from src.projects import ProjectThreadManager, load_project_registry
 from src.scheduler.scheduler import JobScheduler
 from src.security.audit import AuditLogger, InMemoryAuditStorage
 from src.security.auth import (
@@ -127,7 +127,10 @@ async def create_application(config: Settings) -> Dict[str, Any]:
         raise ConfigurationError("No authentication providers configured")
 
     auth_manager = AuthenticationManager(providers)
-    security_validator = SecurityValidator(config.approved_directory)
+    security_validator = SecurityValidator(
+        config.approved_directory,
+        disable_security_patterns=config.disable_security_patterns,
+    )
     rate_limiter = RateLimiter(config)
 
     # Create audit storage and logger
@@ -137,22 +140,16 @@ async def create_application(config: Settings) -> Dict[str, Any]:
     # Create Claude integration components with persistent storage
     session_storage = SQLiteSessionStorage(storage.db_manager)
     session_manager = SessionManager(config, session_storage)
-    tool_monitor = ToolMonitor(config, security_validator)
+    tool_monitor = ToolMonitor(
+        config, security_validator, agentic_mode=config.agentic_mode
+    )
 
-    # Create Claude manager based on configuration
-    if config.use_sdk:
-        logger.info("Using Claude Python SDK integration")
-        sdk_manager = ClaudeSDKManager(config)
-        process_manager = None
-    else:
-        logger.info("Using Claude CLI subprocess integration")
-        process_manager = ClaudeProcessManager(config)
-        sdk_manager = None
+    # Create Claude SDK manager and integration facade
+    logger.info("Using Claude Python SDK integration")
+    sdk_manager = ClaudeSDKManager(config)
 
-    # Create main Claude integration facade
     claude_integration = ClaudeIntegration(
         config=config,
-        process_manager=process_manager,
         sdk_manager=sdk_manager,
         session_manager=session_manager,
         tool_monitor=tool_monitor,
@@ -187,6 +184,8 @@ async def create_application(config: Settings) -> Dict[str, Any]:
         "claude_integration": claude_integration,
         "storage": storage,
         "event_bus": event_bus,
+        "project_registry": None,
+        "project_threads_manager": None,
     }
 
     bot = ClaudeCodeBot(config, dependencies)
@@ -222,6 +221,7 @@ async def run_application(app: Dict[str, Any]) -> None:
 
     notification_service: Optional[NotificationService] = None
     scheduler: Optional[JobScheduler] = None
+    project_threads_manager: Optional[ProjectThreadManager] = None
 
     # Set up signal handlers for graceful shutdown
     shutdown_event = asyncio.Event()
@@ -238,6 +238,43 @@ async def run_application(app: Dict[str, Any]) -> None:
 
         # Initialize the bot first (creates the Telegram Application)
         await bot.initialize()
+
+        if config.enable_project_threads:
+            if not config.projects_config_path:
+                raise ConfigurationError(
+                    "Project thread mode enabled but required settings are missing"
+                )
+            registry = load_project_registry(
+                config_path=config.projects_config_path,
+                approved_directory=config.approved_directory,
+            )
+            project_threads_manager = ProjectThreadManager(
+                registry=registry,
+                repository=storage.project_threads,
+            )
+
+            bot.deps["project_registry"] = registry
+            bot.deps["project_threads_manager"] = project_threads_manager
+
+            if config.project_threads_mode == "group":
+                if config.project_threads_chat_id is None:
+                    raise ConfigurationError(
+                        "Group thread mode requires PROJECT_THREADS_CHAT_ID"
+                    )
+                sync_result = await project_threads_manager.sync_topics(
+                    bot.app.bot,
+                    chat_id=config.project_threads_chat_id,
+                )
+                logger.info(
+                    "Project thread startup sync complete",
+                    mode=config.project_threads_mode,
+                    chat_id=config.project_threads_chat_id,
+                    created=sync_result.created,
+                    reused=sync_result.reused,
+                    renamed=sync_result.renamed,
+                    failed=sync_result.failed,
+                    deactivated=sync_result.deactivated,
+                )
 
         # Now wire up components that need the Telegram Bot instance
         telegram_bot = bot.app.bot

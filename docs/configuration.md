@@ -46,12 +46,23 @@ ENABLE_TOKEN_AUTH=false
 AUTH_TOKEN_SECRET=your-secret-key-here
 ```
 
+#### Security Relaxation (Trusted Environments Only)
+
+```bash
+# Disable dangerous pattern validation in SecurityValidator (default: false)
+# WARNING: This allows characters such as pipes and redirections in validated paths.
+DISABLE_SECURITY_PATTERNS=false
+
+# Disable ToolMonitor allowlist/disallowlist checks (default: false)
+# WARNING: This only skips tool-name allow/disallow checks; path and Bash safety checks still apply.
+DISABLE_TOOL_VALIDATION=false
+```
+
 #### Claude Configuration
 
 ```bash
-# Integration Method
-USE_SDK=true                          # Use Python SDK (default) or CLI subprocess
-ANTHROPIC_API_KEY=sk-ant-api03-...    # Optional: API key for SDK integration
+# Authentication
+ANTHROPIC_API_KEY=sk-ant-api03-...    # Optional: API key for SDK (uses CLI auth if omitted)
 
 # Maximum conversation turns before requiring new session
 CLAUDE_MAX_TURNS=10
@@ -137,6 +148,39 @@ ENABLE_SCHEDULER=false                # Enable cron job scheduler
 # Notifications
 NOTIFICATION_CHAT_IDS=123456,789012  # Default Telegram chat IDs for proactive notifications
 ```
+
+#### Project Thread Mode
+
+```bash
+# Strict project routing via Telegram project topics
+ENABLE_PROJECT_THREADS=false
+
+# Mode: private (default) or group
+PROJECT_THREADS_MODE=private
+
+# YAML registry file with project slugs/names/paths
+PROJECTS_CONFIG_PATH=config/projects.yaml
+
+# Required only for PROJECT_THREADS_MODE=group
+PROJECT_THREADS_CHAT_ID=-1001234567890
+```
+
+`PROJECTS_CONFIG_PATH` schema:
+
+```yaml
+projects:
+  - slug: my-app
+    name: My App
+    path: my-app
+    enabled: true
+```
+
+When `ENABLE_PROJECT_THREADS=true`:
+- `PROJECT_THREADS_MODE=private`:
+  - `/start` and `/sync_threads` are allowed outside topics in private chat.
+  - all other updates must be inside mapped project topics.
+- `PROJECT_THREADS_MODE=group`:
+  - behavior remains forum-topic based using `PROJECT_THREADS_CHAT_ID`.
 
 #### Monitoring & Logging
 
@@ -268,34 +312,17 @@ The configuration system performs extensive validation:
 
 ## Claude Integration Options
 
-### SDK vs CLI Mode
-
-1. **SDK Mode (Default)**: Uses the Claude Code Python SDK for direct API integration
-   - Better performance and streaming support
-   - Can use existing Claude CLI authentication or API key
-
-2. **CLI Mode**: Uses Claude Code CLI subprocess
-   - Requires Claude Code CLI installation
-   - Legacy mode for compatibility
-
 ### Authentication Options
 
 #### Option 1: Use Existing Claude CLI Authentication (Recommended)
 ```bash
-USE_SDK=true
 # No ANTHROPIC_API_KEY needed - SDK will use CLI credentials
+# Ensure Claude CLI is installed and authenticated: claude auth login
 ```
 
 #### Option 2: Direct API Key
 ```bash
-USE_SDK=true
 ANTHROPIC_API_KEY=sk-ant-api03-your-key-here
-```
-
-#### Option 3: CLI Mode (Legacy)
-```bash
-USE_SDK=false
-# Requires Claude CLI to be installed and authenticated
 ```
 
 ## Troubleshooting

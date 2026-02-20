@@ -4,15 +4,14 @@ Provides simple interface for bot handlers.
 """
 
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional
 
 import structlog
 
 from ..config.settings import Settings
 from .exceptions import ClaudeToolValidationError
-from .integration import ClaudeProcessManager, ClaudeResponse, StreamUpdate
 from .monitor import ToolMonitor
-from .sdk_integration import ClaudeSDKManager
+from .sdk_integration import ClaudeResponse, ClaudeSDKManager, StreamUpdate
 from .session import SessionManager
 
 logger = structlog.get_logger()
@@ -24,29 +23,15 @@ class ClaudeIntegration:
     def __init__(
         self,
         config: Settings,
-        process_manager: Optional[ClaudeProcessManager] = None,
         sdk_manager: Optional[ClaudeSDKManager] = None,
         session_manager: Optional[SessionManager] = None,
         tool_monitor: Optional[ToolMonitor] = None,
     ):
         """Initialize Claude integration facade."""
         self.config = config
-
-        # Initialize both managers for fallback capability
-        self.sdk_manager = (
-            sdk_manager or ClaudeSDKManager(config) if config.use_sdk else None
-        )
-        self.process_manager = process_manager or ClaudeProcessManager(config)
-
-        # Use SDK by default if configured
-        if config.use_sdk:
-            self.manager = self.sdk_manager
-        else:
-            self.manager = self.process_manager
-
+        self.sdk_manager = sdk_manager or ClaudeSDKManager(config)
         self.session_manager = session_manager
         self.tool_monitor = tool_monitor
-        self._sdk_failed_count = 0  # Track SDK failures for adaptive fallback
 
     async def run_command(
         self,
@@ -55,6 +40,7 @@ class ClaudeIntegration:
         user_id: int,
         session_id: Optional[str] = None,
         on_stream: Optional[Callable[[StreamUpdate], None]] = None,
+        force_new: bool = False,
     ) -> ClaudeResponse:
         """Run Claude Code command with full integration."""
         logger.info(
@@ -63,11 +49,13 @@ class ClaudeIntegration:
             working_directory=str(working_directory),
             session_id=session_id,
             prompt_length=len(prompt),
+            force_new=force_new,
         )
 
         # If no session_id provided, try to find an existing session for this
-        # user+directory combination (auto-resume)
-        if not session_id:
+        # user+directory combination (auto-resume).
+        # Skip auto-resume when force_new is set (e.g. after /new command).
+        if not session_id and not force_new:
             existing_session = await self._find_resumable_session(
                 user_id, working_directory
             )
@@ -120,7 +108,7 @@ class ClaudeIntegration:
                         )
 
                         # For critical tools, we should fail fast
-                        if tool_name in ["Task", "Read", "Write", "Edit"]:
+                        if tool_name in ["Task", "Read", "Write", "Edit", "Bash"]:
                             # Create comprehensive error message
                             admin_instructions = self._get_admin_instructions(
                                 list(blocked_tools)
@@ -146,16 +134,15 @@ class ClaudeIntegration:
 
         # Execute command
         try:
-            # Continue session if we have a real (non-temporary) session ID
+            # Continue session if we have an existing session with a real ID
             is_new = getattr(session, "is_new_session", False)
-            has_real_session = not is_new and not session.session_id.startswith("temp_")
-            should_continue = has_real_session
+            should_continue = not is_new and bool(session.session_id)
 
-            # For new sessions, don't pass the temporary session_id to Claude Code
-            claude_session_id = session.session_id if has_real_session else None
+            # For new sessions, don't pass session_id to Claude Code
+            claude_session_id = session.session_id if should_continue else None
 
             try:
-                response = await self._execute_with_fallback(
+                response = await self._execute(
                     prompt=prompt,
                     working_directory=working_directory,
                     session_id=claude_session_id,
@@ -181,7 +168,7 @@ class ClaudeIntegration:
                     session = await self.session_manager.get_or_create_session(
                         user_id, working_directory
                     )
-                    response = await self._execute_with_fallback(
+                    response = await self._execute(
                         prompt=prompt,
                         working_directory=working_directory,
                         session_id=None,
@@ -229,20 +216,17 @@ class ClaudeIntegration:
                         f"Details: {'; '.join(validation_errors)}"
                     )
 
-            # Update session (this may change the session_id for new sessions)
-            old_session_id = session.session_id
-            await self.session_manager.update_session(session.session_id, response)
+            # Update session (assigns real session_id for new sessions)
+            await self.session_manager.update_session(session, response)
 
-            # For new sessions, get the updated session_id from the session manager
-            if hasattr(session, "is_new_session") and response.session_id:
-                # The session_id has been updated to Claude's session_id
-                final_session_id = response.session_id
-            else:
-                # Use the original session_id for continuing sessions
-                final_session_id = old_session_id
+            # Ensure response has the session's final ID
+            response.session_id = session.session_id
 
-            # Ensure response has the correct session_id
-            response.session_id = final_session_id
+            if not response.session_id:
+                logger.warning(
+                    "No session_id after execution; session cannot be resumed",
+                    user_id=user_id,
+                )
 
             logger.info(
                 "Claude command completed",
@@ -264,7 +248,7 @@ class ClaudeIntegration:
             )
             raise
 
-    async def _execute_with_fallback(
+    async def _execute(
         self,
         prompt: str,
         working_directory: Path,
@@ -272,91 +256,25 @@ class ClaudeIntegration:
         continue_session: bool = False,
         stream_callback: Optional[Callable] = None,
     ) -> ClaudeResponse:
-        """Execute command with SDK->subprocess fallback on JSON decode errors."""
-        # Try SDK first if configured
-        if self.config.use_sdk and self.sdk_manager:
-            try:
-                logger.debug("Attempting Claude SDK execution")
-                response = await self.sdk_manager.execute_command(
-                    prompt=prompt,
-                    working_directory=working_directory,
-                    session_id=session_id,
-                    continue_session=continue_session,
-                    stream_callback=stream_callback,
-                )
-                # Reset failure count on success
-                self._sdk_failed_count = 0
-                return response
-
-            except Exception as e:
-                error_str = str(e)
-                # Check if this is a JSON decode error that indicates SDK issues
-                if (
-                    "Failed to decode JSON" in error_str
-                    or "JSON decode error" in error_str
-                    or "TaskGroup" in error_str
-                    or "ExceptionGroup" in error_str
-                    or "Unknown message type" in error_str
-                ):
-                    self._sdk_failed_count += 1
-                    logger.warning(
-                        "Claude SDK failed with JSON/TaskGroup error, falling back to subprocess",
-                        error=error_str,
-                        failure_count=self._sdk_failed_count,
-                        error_type=type(e).__name__,
-                    )
-
-                    # Use subprocess fallback
-                    try:
-                        logger.info("Executing with subprocess fallback")
-                        # Don't pass SDK session_id to subprocess - start fresh
-                        # SDK and subprocess have separate session management
-                        response = await self.process_manager.execute_command(
-                            prompt=prompt,
-                            working_directory=working_directory,
-                            session_id=None,  # Start new session in subprocess
-                            continue_session=False,  # Fresh start
-                            stream_callback=stream_callback,
-                        )
-                        logger.info("Subprocess fallback succeeded")
-                        return response
-
-                    except Exception as fallback_error:
-                        logger.error(
-                            "Both SDK and subprocess failed",
-                            sdk_error=error_str,
-                            subprocess_error=str(fallback_error),
-                        )
-                        # Re-raise the original SDK error since it was the primary method
-                        raise e
-                else:
-                    # For non-JSON errors, re-raise immediately
-                    logger.error(
-                        "Claude SDK failed with non-JSON error", error=error_str
-                    )
-                    raise
-        else:
-            # Use subprocess directly if SDK not configured
-            logger.debug("Using subprocess execution (SDK disabled)")
-            return await self.process_manager.execute_command(
-                prompt=prompt,
-                working_directory=working_directory,
-                session_id=session_id,
-                continue_session=continue_session,
-                stream_callback=stream_callback,
-            )
+        """Execute command via SDK."""
+        return await self.sdk_manager.execute_command(
+            prompt=prompt,
+            working_directory=working_directory,
+            session_id=session_id,
+            continue_session=continue_session,
+            stream_callback=stream_callback,
+        )
 
     async def _find_resumable_session(
         self,
         user_id: int,
         working_directory: Path,
-    ) -> Optional["ClaudeSession"]:
+    ) -> Optional["ClaudeSession"]:  # noqa: F821
         """Find the most recent resumable session for a user in a directory.
 
         Returns the session if one exists that is non-expired and has a real
         (non-temporary) session ID from Claude. Returns None otherwise.
         """
-        from .session import ClaudeSession
 
         sessions = await self.session_manager._get_user_sessions(user_id)
 
@@ -364,7 +282,7 @@ class ClaudeIntegration:
             s
             for s in sessions
             if s.project_path == working_directory
-            and not s.session_id.startswith("temp_")
+            and bool(s.session_id)
             and not s.is_expired(self.config.session_timeout_hours)
         ]
 
@@ -391,12 +309,11 @@ class ClaudeIntegration:
         # Get user's sessions
         sessions = await self.session_manager._get_user_sessions(user_id)
 
-        # Find most recent session in this directory (exclude temporary sessions)
+        # Find most recent session in this directory (exclude sessions without IDs)
         matching_sessions = [
             s
             for s in sessions
-            if s.project_path == working_directory
-            and not s.session_id.startswith("temp_")
+            if s.project_path == working_directory and bool(s.session_id)
         ]
 
         if not matching_sessions:
@@ -460,10 +377,6 @@ class ClaudeIntegration:
         """Shutdown integration and cleanup resources."""
         logger.info("Shutting down Claude integration")
 
-        # Kill any active processes
-        await self.manager.kill_all_processes()
-
-        # Clean up expired sessions
         await self.cleanup_expired_sessions()
 
         logger.info("Claude integration shutdown complete")
@@ -546,7 +459,7 @@ class ClaudeIntegration:
         message = [
             "🚫 **Tool Access Blocked**",
             "",
-            f"Claude tried to use tools that are not currently allowed:",
+            "Claude tried to use tools that are not currently allowed:",
             f"{tool_list}",
             "",
             "**Why this happened:**",

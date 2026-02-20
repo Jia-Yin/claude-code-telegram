@@ -8,10 +8,11 @@ classic mode, delegates to existing full-featured handlers.
 import asyncio
 import re
 import time
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import structlog
-from telegram import BotCommand, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -22,8 +23,9 @@ from telegram.ext import (
 )
 
 from ..claude.exceptions import ClaudeToolValidationError
-from ..claude.integration import StreamUpdate
+from ..claude.sdk_integration import StreamUpdate
 from ..config.settings import Settings
+from ..projects import PrivateTopicsUnavailableError
 from .utils.html_format import escape_html
 
 logger = structlog.get_logger()
@@ -109,9 +111,166 @@ class MessageOrchestrator:
             for key, value in self.deps.items():
                 context.bot_data[key] = value
             context.bot_data["settings"] = self.settings
-            await handler(update, context)
+            context.user_data.pop("_thread_context", None)
+
+            is_sync_bypass = handler.__name__ == "sync_threads"
+            is_start_bypass = handler.__name__ in {"start_command", "agentic_start"}
+            message_thread_id = self._extract_message_thread_id(update)
+            should_enforce = self.settings.enable_project_threads
+
+            if should_enforce:
+                if self.settings.project_threads_mode == "private":
+                    should_enforce = not is_sync_bypass and not (
+                        is_start_bypass and message_thread_id is None
+                    )
+                else:
+                    should_enforce = not is_sync_bypass
+
+            if should_enforce:
+                allowed = await self._apply_thread_routing_context(update, context)
+                if not allowed:
+                    return
+
+            try:
+                await handler(update, context)
+            finally:
+                if should_enforce:
+                    self._persist_thread_state(context)
 
         return wrapped
+
+    async def _apply_thread_routing_context(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> bool:
+        """Enforce strict project-thread routing and load thread-local state."""
+        manager = context.bot_data.get("project_threads_manager")
+        if manager is None:
+            await self._reject_for_thread_mode(
+                update,
+                "❌ <b>Project Thread Mode Misconfigured</b>\n\n"
+                "Thread manager is not initialized.",
+            )
+            return False
+
+        chat = update.effective_chat
+        message = update.effective_message
+        if not chat or not message:
+            return False
+
+        if self.settings.project_threads_mode == "group":
+            if chat.id != self.settings.project_threads_chat_id:
+                await self._reject_for_thread_mode(
+                    update,
+                    manager.guidance_message(mode=self.settings.project_threads_mode),
+                )
+                return False
+        else:
+            if getattr(chat, "type", "") != "private":
+                await self._reject_for_thread_mode(
+                    update,
+                    manager.guidance_message(mode=self.settings.project_threads_mode),
+                )
+                return False
+
+        message_thread_id = self._extract_message_thread_id(update)
+        if not message_thread_id:
+            await self._reject_for_thread_mode(
+                update,
+                manager.guidance_message(mode=self.settings.project_threads_mode),
+            )
+            return False
+
+        project = await manager.resolve_project(chat.id, message_thread_id)
+        if not project:
+            await self._reject_for_thread_mode(
+                update,
+                manager.guidance_message(mode=self.settings.project_threads_mode),
+            )
+            return False
+
+        state_key = f"{chat.id}:{message_thread_id}"
+        thread_states = context.user_data.setdefault("thread_state", {})
+        state = thread_states.get(state_key, {})
+
+        project_root = project.absolute_path
+        current_dir_raw = state.get("current_directory")
+        current_dir = (
+            Path(current_dir_raw).resolve() if current_dir_raw else project_root
+        )
+        if not self._is_within(current_dir, project_root) or not current_dir.is_dir():
+            current_dir = project_root
+
+        context.user_data["current_directory"] = current_dir
+        context.user_data["claude_session_id"] = state.get("claude_session_id")
+        context.user_data["_thread_context"] = {
+            "chat_id": chat.id,
+            "message_thread_id": message_thread_id,
+            "state_key": state_key,
+            "project_slug": project.slug,
+            "project_root": str(project_root),
+            "project_name": project.name,
+        }
+        return True
+
+    def _persist_thread_state(self, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Persist compatibility keys back into per-thread state."""
+        thread_context = context.user_data.get("_thread_context")
+        if not thread_context:
+            return
+
+        project_root = Path(thread_context["project_root"])
+        current_dir = context.user_data.get("current_directory", project_root)
+        if not isinstance(current_dir, Path):
+            current_dir = Path(str(current_dir))
+        current_dir = current_dir.resolve()
+        if not self._is_within(current_dir, project_root) or not current_dir.is_dir():
+            current_dir = project_root
+
+        thread_states = context.user_data.setdefault("thread_state", {})
+        thread_states[thread_context["state_key"]] = {
+            "current_directory": str(current_dir),
+            "claude_session_id": context.user_data.get("claude_session_id"),
+            "project_slug": thread_context["project_slug"],
+        }
+
+    @staticmethod
+    def _is_within(path: Path, root: Path) -> bool:
+        """Return True if path is within root."""
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _extract_message_thread_id(update: Update) -> Optional[int]:
+        """Extract topic/thread id from update message for forum/direct topics."""
+        message = update.effective_message
+        if not message:
+            return None
+        message_thread_id = getattr(message, "message_thread_id", None)
+        if isinstance(message_thread_id, int) and message_thread_id > 0:
+            return message_thread_id
+        dm_topic = getattr(message, "direct_messages_topic", None)
+        topic_id = getattr(dm_topic, "topic_id", None) if dm_topic else None
+        if isinstance(topic_id, int) and topic_id > 0:
+            return topic_id
+        return None
+
+    async def _reject_for_thread_mode(self, update: Update, message: str) -> None:
+        """Send a guidance response when strict thread routing rejects an update."""
+        query = update.callback_query
+        if query:
+            try:
+                await query.answer()
+            except Exception:
+                pass
+            if query.message:
+                await query.message.reply_text(message, parse_mode="HTML")
+            return
+
+        if update.effective_message:
+            await update.effective_message.reply_text(message, parse_mode="HTML")
 
     def register_handlers(self, app: Application) -> None:
         """Register handlers based on mode."""
@@ -121,14 +280,21 @@ class MessageOrchestrator:
             self._register_classic_handlers(app)
 
     def _register_agentic_handlers(self, app: Application) -> None:
-        """Register minimal agentic handlers: 4 commands + text/file/photo."""
+        """Register agentic handlers: commands + text/file/photo."""
+        from .handlers import command
+
         # Commands
-        for cmd, handler in [
+        handlers = [
             ("start", self.agentic_start),
             ("new", self.agentic_new),
             ("status", self.agentic_status),
             ("verbose", self.agentic_verbose),
-        ]:
+            ("repo", self.agentic_repo),
+        ]
+        if self.settings.enable_project_threads:
+            handlers.append(("sync_threads", command.sync_threads))
+
+        for cmd, handler in handlers:
             app.add_handler(CommandHandler(cmd, self._inject_deps(handler)))
 
         # Text messages -> Claude
@@ -162,7 +328,7 @@ class MessageOrchestrator:
             )
         )
 
-        logger.info("Agentic handlers registered (3 commands + text/file/photo)")
+        logger.info("Agentic handlers registered")
 
     def _register_classic_handlers(self, app: Application) -> None:
         """Register full classic handler set (moved from core.py)."""
@@ -183,6 +349,8 @@ class MessageOrchestrator:
             ("actions", command.quick_actions),
             ("git", command.git_command),
         ]
+        if self.settings.enable_project_threads:
+            handlers.append(("sync_threads", command.sync_threads))
 
         for cmd, handler in handlers:
             app.add_handler(CommandHandler(cmd, self._inject_deps(handler)))
@@ -213,14 +381,18 @@ class MessageOrchestrator:
     async def get_bot_commands(self) -> list:  # type: ignore[type-arg]
         """Return bot commands appropriate for current mode."""
         if self.settings.agentic_mode:
-            return [
+            commands = [
                 BotCommand("start", "Start the bot"),
                 BotCommand("new", "Start a fresh session"),
                 BotCommand("status", "Show session status"),
                 BotCommand("verbose", "Set output verbosity (0/1/2)"),
+                BotCommand("repo", "List repos / switch workspace"),
             ]
+            if self.settings.enable_project_threads:
+                commands.append(BotCommand("sync_threads", "Sync project topics"))
+            return commands
         else:
-            return [
+            commands = [
                 BotCommand("start", "Start bot and show help"),
                 BotCommand("help", "Show available commands"),
                 BotCommand("new", "Clear context and start fresh session"),
@@ -235,6 +407,9 @@ class MessageOrchestrator:
                 BotCommand("actions", "Show quick actions"),
                 BotCommand("git", "Git repository commands"),
             ]
+            if self.settings.enable_project_threads:
+                commands.append(BotCommand("sync_threads", "Sync project topics"))
+            return commands
 
     # --- Agentic handlers ---
 
@@ -243,6 +418,40 @@ class MessageOrchestrator:
     ) -> None:
         """Brief welcome, no buttons."""
         user = update.effective_user
+        sync_line = ""
+        if (
+            self.settings.enable_project_threads
+            and self.settings.project_threads_mode == "private"
+        ):
+            if (
+                not update.effective_chat
+                or getattr(update.effective_chat, "type", "") != "private"
+            ):
+                await update.message.reply_text(
+                    "🚫 <b>Private Topics Mode</b>\n\n"
+                    "Use this bot in a private chat and run <code>/start</code> there.",
+                    parse_mode="HTML",
+                )
+                return
+            manager = context.bot_data.get("project_threads_manager")
+            if manager:
+                try:
+                    result = await manager.sync_topics(
+                        context.bot,
+                        chat_id=update.effective_chat.id,
+                    )
+                    sync_line = (
+                        "\n\n🧵 Topics synced"
+                        f" (created {result.created}, reused {result.reused})."
+                    )
+                except PrivateTopicsUnavailableError:
+                    await update.message.reply_text(
+                        manager.private_topics_unavailable_message(),
+                        parse_mode="HTML",
+                    )
+                    return
+                except Exception:
+                    sync_line = "\n\n🧵 Topic sync failed. Run /sync_threads to retry."
         current_dir = context.user_data.get(
             "current_directory", self.settings.approved_directory
         )
@@ -253,7 +462,8 @@ class MessageOrchestrator:
             f"Hi {safe_name}! I'm your AI coding assistant.\n"
             f"Just tell me what you need — I can read, write, and run code.\n\n"
             f"Working in: {dir_display}\n"
-            f"Commands: /new (reset) · /status",
+            f"Commands: /new (reset) · /status"
+            f"{sync_line}",
             parse_mode="HTML",
         )
 
@@ -263,6 +473,7 @@ class MessageOrchestrator:
         """Reset session, one-line confirmation."""
         context.user_data["claude_session_id"] = None
         context.user_data["session_started"] = True
+        context.user_data["force_new_session"] = True
 
         await update.message.reply_text("Session reset. What's next?")
 
@@ -514,6 +725,10 @@ class MessageOrchestrator:
         )
         session_id = context.user_data.get("claude_session_id")
 
+        # Check if /new was used — skip auto-resume for this first message.
+        # Flag is only cleared after a successful run so retries keep the intent.
+        force_new = bool(context.user_data.get("force_new_session"))
+
         # --- Verbose progress tracking via stream callback ---
         tool_log: List[Dict[str, Any]] = []
         start_time = time.time()
@@ -532,7 +747,12 @@ class MessageOrchestrator:
                 user_id=user_id,
                 session_id=session_id,
                 on_stream=on_stream,
+                force_new=force_new,
             )
+
+            # New session created successfully — clear the one-shot flag
+            if force_new:
+                context.user_data["force_new_session"] = False
 
             context.user_data["claude_session_id"] = claude_response.session_id
 
@@ -708,6 +928,10 @@ class MessageOrchestrator:
         )
         session_id = context.user_data.get("claude_session_id")
 
+        # Check if /new was used — skip auto-resume for this first message.
+        # Flag is only cleared after a successful run so retries keep the intent.
+        force_new = bool(context.user_data.get("force_new_session"))
+
         verbose_level = self._get_verbose_level(context)
         tool_log: List[Dict[str, Any]] = []
         on_stream = self._make_stream_callback(
@@ -722,7 +946,12 @@ class MessageOrchestrator:
                 user_id=user_id,
                 session_id=session_id,
                 on_stream=on_stream,
+                force_new=force_new,
             )
+
+            if force_new:
+                context.user_data["force_new_session"] = False
+
             context.user_data["claude_session_id"] = claude_response.session_id
 
             from .handlers.message import _update_working_directory_from_claude_response
@@ -795,6 +1024,10 @@ class MessageOrchestrator:
             )
             session_id = context.user_data.get("claude_session_id")
 
+            # Check if /new was used — skip auto-resume for this first message.
+            # Flag is only cleared after a successful run so retries keep the intent.
+            force_new = bool(context.user_data.get("force_new_session"))
+
             verbose_level = self._get_verbose_level(context)
             tool_log: List[Dict[str, Any]] = []
             on_stream = self._make_stream_callback(
@@ -809,9 +1042,14 @@ class MessageOrchestrator:
                     user_id=user_id,
                     session_id=session_id,
                     on_stream=on_stream,
+                    force_new=force_new,
                 )
             finally:
                 heartbeat.cancel()
+
+            if force_new:
+                context.user_data["force_new_session"] = False
+
             context.user_data["claude_session_id"] = claude_response.session_id
 
             from .utils.formatting import ResponseFormatter
@@ -843,16 +1081,151 @@ class MessageOrchestrator:
                 "Claude photo processing failed", error=str(e), user_id=user_id
             )
 
+    async def agentic_repo(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """List repos in workspace or switch to one.
+
+        /repo          — list subdirectories with git indicators
+        /repo <name>   — switch to that directory, resume session if available
+        """
+        args = update.message.text.split()[1:] if update.message.text else []
+        base = self.settings.approved_directory
+        current_dir = context.user_data.get("current_directory", base)
+
+        if args:
+            # Switch to named repo
+            target_name = args[0]
+            target_path = base / target_name
+            if not target_path.is_dir():
+                await update.message.reply_text(
+                    f"Directory not found: <code>{escape_html(target_name)}</code>",
+                    parse_mode="HTML",
+                )
+                return
+
+            context.user_data["current_directory"] = target_path
+
+            # Try to find a resumable session
+            claude_integration = context.bot_data.get("claude_integration")
+            session_id = None
+            if claude_integration:
+                existing = await claude_integration._find_resumable_session(
+                    update.effective_user.id, target_path
+                )
+                if existing:
+                    session_id = existing.session_id
+            context.user_data["claude_session_id"] = session_id
+
+            is_git = (target_path / ".git").is_dir()
+            git_badge = " (git)" if is_git else ""
+            session_badge = " · session resumed" if session_id else ""
+
+            await update.message.reply_text(
+                f"Switched to <code>{escape_html(target_name)}/</code>"
+                f"{git_badge}{session_badge}",
+                parse_mode="HTML",
+            )
+            return
+
+        # No args — list repos
+        try:
+            entries = sorted(
+                [
+                    d
+                    for d in base.iterdir()
+                    if d.is_dir() and not d.name.startswith(".")
+                ],
+                key=lambda d: d.name,
+            )
+        except OSError as e:
+            await update.message.reply_text(f"Error reading workspace: {e}")
+            return
+
+        if not entries:
+            await update.message.reply_text(
+                f"No repos in <code>{escape_html(str(base))}</code>.\n"
+                'Clone one by telling me, e.g. <i>"clone org/repo"</i>.',
+                parse_mode="HTML",
+            )
+            return
+
+        lines: List[str] = []
+        keyboard_rows: List[list] = []  # type: ignore[type-arg]
+        current_name = current_dir.name if current_dir != base else None
+
+        for d in entries:
+            is_git = (d / ".git").is_dir()
+            icon = "\U0001f4e6" if is_git else "\U0001f4c1"
+            marker = " \u25c0" if d.name == current_name else ""
+            lines.append(f"{icon} <code>{escape_html(d.name)}/</code>{marker}")
+
+        # Build inline keyboard (2 per row)
+        for i in range(0, len(entries), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(entries):
+                    name = entries[i + j].name
+                    row.append(InlineKeyboardButton(name, callback_data=f"cd:{name}"))
+            keyboard_rows.append(row)
+
+        reply_markup = InlineKeyboardMarkup(keyboard_rows)
+
+        await update.message.reply_text(
+            "<b>Repos</b>\n\n" + "\n".join(lines),
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
+
     async def _agentic_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """Handle cd: callbacks (pattern-filtered by registration)."""
+        """Handle cd: callbacks — switch directory and resume session if available."""
         query = update.callback_query
         await query.answer()
 
         data = query.data
-        _, param = data.split(":", 1)
+        _, project_name = data.split(":", 1)
 
-        from .handlers.callback import handle_cd_callback
+        base = self.settings.approved_directory
+        new_path = base / project_name
 
-        await handle_cd_callback(query, param, context)
+        if not new_path.is_dir():
+            await query.edit_message_text(
+                f"Directory not found: <code>{escape_html(project_name)}</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        context.user_data["current_directory"] = new_path
+
+        # Look for a resumable session instead of always clearing
+        claude_integration = context.bot_data.get("claude_integration")
+        session_id = None
+        if claude_integration:
+            existing = await claude_integration._find_resumable_session(
+                query.from_user.id, new_path
+            )
+            if existing:
+                session_id = existing.session_id
+        context.user_data["claude_session_id"] = session_id
+
+        is_git = (new_path / ".git").is_dir()
+        git_badge = " (git)" if is_git else ""
+        session_badge = " · session resumed" if session_id else ""
+
+        await query.edit_message_text(
+            f"Switched to <code>{escape_html(project_name)}/</code>"
+            f"{git_badge}{session_badge}",
+            parse_mode="HTML",
+        )
+
+        # Audit log
+        audit_logger = context.bot_data.get("audit_logger")
+        if audit_logger:
+            await audit_logger.log_command(
+                user_id=query.from_user.id,
+                command="cd",
+                args=[project_name],
+                success=True,
+            )
