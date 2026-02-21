@@ -1,18 +1,24 @@
-.PHONY: install dev test lint format clean help run run-remote remote-attach remote-stop
+.PHONY: install dev test lint format clean help run run-remote remote-attach remote-stop \
+       bump-patch bump-minor bump-major release version
 .PHONY: systemd-install systemd-start systemd-stop systemd-restart systemd-status systemd-logs
 
 # Default target
 help:
 	@echo "Available commands:"
-	@echo "  install    - Install production dependencies"
-	@echo "  dev        - Install development dependencies"
-	@echo "  test       - Run tests"
-	@echo "  lint       - Run linting checks"
-	@echo "  format     - Format code"
-	@echo "  clean      - Clean up generated files"
-	@echo "  run        - Run the bot"
-	@echo "  run-loop   - Run with auto-restart (ensures code reload)"
-	@echo "  run-remote - Start bot in tmux on remote Mac (unlocks keychain)"
+	@echo "  install       - Install production dependencies"
+	@echo "  dev           - Install development dependencies"
+	@echo "  test          - Run tests"
+	@echo "  lint          - Run linting checks"
+	@echo "  format        - Format code"
+	@echo "  clean         - Clean up generated files"
+	@echo "  run           - Run the bot"
+	@echo "  run-loop      - Run with auto-restart (ensures code reload)"
+	@echo "  version       - Show current version"
+	@echo "  bump-patch    - Bump patch version (1.2.0 -> 1.2.1), commit, and tag"
+	@echo "  bump-minor    - Bump minor version (1.2.0 -> 1.3.0), commit, and tag"
+	@echo "  bump-major    - Bump major version (1.2.0 -> 2.0.0), commit, and tag"
+	@echo "  release       - Push current version tag to trigger release workflow"
+	@echo "  run-remote    - Start bot in tmux on remote Mac (unlocks keychain)"
 	@echo "  remote-attach - Attach to running bot tmux session"
 	@echo "  remote-stop   - Stop the bot tmux session"
 	@echo ""
@@ -103,3 +109,40 @@ systemd-status:  ## Show service status
 
 systemd-logs:  ## Show and follow service logs
 	sudo journalctl -u claude-telegram-bot -f
+
+# --- Version Management ---
+
+version:  ## Show current version
+	@poetry version -s
+
+bump-patch:  ## Bump patch version, commit, and tag
+	poetry version patch && \
+	NEW_VERSION=$$(poetry version -s) && \
+	git add pyproject.toml && \
+	git commit -m "release: v$$NEW_VERSION" && \
+	git tag "v$$NEW_VERSION" && \
+	git push && git push origin "v$$NEW_VERSION" && \
+	echo "Released v$$NEW_VERSION. Tag pushed — release workflow will run on GitHub."
+
+bump-minor:  ## Bump minor version, commit, and tag
+	poetry version minor && \
+	NEW_VERSION=$$(poetry version -s) && \
+	git add pyproject.toml && \
+	git commit -m "release: v$$NEW_VERSION" && \
+	git tag "v$$NEW_VERSION" && \
+	git push && git push origin "v$$NEW_VERSION" && \
+	echo "Released v$$NEW_VERSION. Tag pushed — release workflow will run on GitHub."
+
+bump-major:  ## Bump major version, commit, and tag
+	poetry version major && \
+	NEW_VERSION=$$(poetry version -s) && \
+	git add pyproject.toml && \
+	git commit -m "release: v$$NEW_VERSION" && \
+	git tag "v$$NEW_VERSION" && \
+	git push && git push origin "v$$NEW_VERSION" && \
+	echo "Released v$$NEW_VERSION. Tag pushed — release workflow will run on GitHub."
+
+release:  ## Push the current version tag to trigger the release workflow
+	CURRENT_VERSION=$$(poetry version -s) && \
+	git push && git push origin "v$$CURRENT_VERSION" && \
+	echo "Pushed v$$CURRENT_VERSION. Release workflow will run on GitHub."
