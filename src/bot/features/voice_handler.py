@@ -1,7 +1,8 @@
-"""Handle voice message transcription via Mistral (Voxtral) or OpenAI (Whisper)."""
+"""Handle voice message transcription via ElevenLabs, Mistral, or OpenAI."""
 
 from dataclasses import dataclass
 from datetime import timedelta
+from io import BytesIO
 from typing import Any, Optional
 
 import structlog
@@ -22,10 +23,11 @@ class ProcessedVoice:
 
 
 class VoiceHandler:
-    """Transcribe Telegram voice messages using Mistral or OpenAI."""
+    """Transcribe Telegram voice messages using ElevenLabs, Mistral, or OpenAI."""
 
     def __init__(self, config: Settings):
         self.config = config
+        self._elevenlabs_client: Optional[Any] = None
         self._mistral_client: Optional[Any] = None
         self._openai_client: Optional[Any] = None
 
@@ -79,7 +81,9 @@ class VoiceHandler:
             file_size=initial_file_size or resolved_file_size or len(voice_bytes),
         )
 
-        if self.config.voice_provider == "openai":
+        if self.config.voice_provider == "elevenlabs":
+            transcription = await self._transcribe_elevenlabs(voice_bytes)
+        elif self.config.voice_provider == "openai":
             transcription = await self._transcribe_openai(voice_bytes)
         else:
             transcription = await self._transcribe_mistral(voice_bytes)
@@ -102,6 +106,76 @@ class VoiceHandler:
             transcription=transcription,
             duration=duration_secs,
         )
+
+    async def _transcribe_elevenlabs(self, voice_bytes: bytes) -> str:
+        """Transcribe audio using the ElevenLabs Speech-to-Text API."""
+        client = self._get_elevenlabs_client()
+        audio_file = BytesIO(voice_bytes)
+        audio_file.name = "voice.ogg"
+
+        try:
+            response = await client.speech_to_text.convert(
+                file=audio_file,
+                model_id=self.config.resolved_voice_model,
+            )
+        except Exception as exc:
+            logger.warning(
+                "ElevenLabs transcription request failed",
+                error_type=type(exc).__name__,
+            )
+            raise RuntimeError("ElevenLabs transcription request failed.") from exc
+
+        text = self._extract_elevenlabs_text(response)
+        if not text:
+            raise ValueError("ElevenLabs transcription returned an empty response.")
+        return text
+
+    @staticmethod
+    def _extract_elevenlabs_text(response: Any) -> str:
+        """Extract transcript text from ElevenLabs SDK response variants."""
+        text_val = getattr(response, "text", "")
+        text = text_val.strip() if isinstance(text_val, str) else ""
+        if text:
+            return text
+
+        transcript_val = getattr(response, "transcript", "")
+        transcript = transcript_val.strip() if isinstance(transcript_val, str) else ""
+        if transcript:
+            return transcript
+
+        transcripts = getattr(response, "transcripts", None)
+        if isinstance(transcripts, list):
+            parts = []
+            for item in transcripts:
+                part_val = getattr(item, "text", "")
+                part = part_val.strip() if isinstance(part_val, str) else ""
+                if part:
+                    parts.append(part)
+            if parts:
+                return "\n".join(parts)
+
+        return ""
+
+    def _get_elevenlabs_client(self) -> Any:
+        """Create and cache an ElevenLabs async client on first use."""
+        if self._elevenlabs_client is not None:
+            return self._elevenlabs_client
+
+        try:
+            from elevenlabs.client import AsyncElevenLabs
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "Optional dependency 'elevenlabs' is missing for voice transcription. "
+                "Install voice extras: "
+                'pip install "claude-code-telegram[voice]"'
+            ) from exc
+
+        api_key = self.config.elevenlabs_api_key_str
+        if not api_key:
+            raise RuntimeError("ElevenLabs API key is not configured.")
+
+        self._elevenlabs_client = AsyncElevenLabs(api_key=api_key)
+        return self._elevenlabs_client
 
     async def _transcribe_mistral(self, voice_bytes: bytes) -> str:
         """Transcribe audio using the Mistral API (Voxtral)."""

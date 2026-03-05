@@ -190,7 +190,13 @@ ENABLE_VOICE_MESSAGES=true
 
 Choose your transcription provider:
 
-**Mistral Voxtral (default):**
+**ElevenLabs Scribe (default):**
+```bash
+VOICE_PROVIDER=elevenlabs
+ELEVENLABS_API_KEY=your-elevenlabs-api-key
+```
+
+**Mistral Voxtral:**
 ```bash
 VOICE_PROVIDER=mistral
 MISTRAL_API_KEY=your-mistral-api-key
@@ -207,7 +213,7 @@ If you installed via pip/uv, make sure voice extras are installed:
 pip install "claude-code-telegram[voice]"
 ```
 
-Optionally override the transcription model with `VOICE_TRANSCRIPTION_MODEL` (defaults to `voxtral-mini-latest` for Mistral, `whisper-1` for OpenAI).
+Optionally override the transcription model with `VOICE_TRANSCRIPTION_MODEL` (defaults to `scribe_v2` for ElevenLabs, `voxtral-mini-latest` for Mistral, `whisper-1` for OpenAI).
 
 ### Notification Recipients
 

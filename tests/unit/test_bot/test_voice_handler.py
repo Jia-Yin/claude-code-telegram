@@ -23,6 +23,18 @@ def mistral_config():
 
 
 @pytest.fixture
+def elevenlabs_config():
+    """Create a mock config with ElevenLabs settings."""
+    cfg = MagicMock()
+    cfg.voice_provider = "elevenlabs"
+    cfg.elevenlabs_api_key_str = "test-elevenlabs-key"
+    cfg.resolved_voice_model = "scribe_v2"
+    cfg.voice_max_file_size_mb = 20
+    cfg.voice_max_file_size_bytes = 20 * 1024 * 1024
+    return cfg
+
+
+@pytest.fixture
 def openai_config():
     """Create a mock config with OpenAI settings."""
     cfg = MagicMock()
@@ -38,6 +50,12 @@ def openai_config():
 def voice_handler(mistral_config):
     """Create a VoiceHandler instance with Mistral config."""
     return VoiceHandler(config=mistral_config)
+
+
+@pytest.fixture
+def elevenlabs_voice_handler(elevenlabs_config):
+    """Create a VoiceHandler instance with ElevenLabs config."""
+    return VoiceHandler(config=elevenlabs_config)
 
 
 @pytest.fixture
@@ -263,6 +281,116 @@ async def test_transcribe_mistral_error_message_does_not_echo_exception_details(
 
 
 # --- OpenAI provider tests ---
+
+
+async def test_process_voice_message_elevenlabs(elevenlabs_voice_handler):
+    """process_voice_message transcribes via ElevenLabs Scribe."""
+    voice = _mock_voice(duration=8)
+
+    mock_response = MagicMock()
+    mock_response.text = "  Hello from Scribe.  "
+
+    mock_stt = MagicMock()
+    mock_stt.convert = AsyncMock(return_value=mock_response)
+
+    mock_client = MagicMock()
+    mock_client.speech_to_text = mock_stt
+    elevenlabs_ctor = MagicMock(return_value=mock_client)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(
+            sys.modules,
+            "elevenlabs.client",
+            SimpleNamespace(AsyncElevenLabs=elevenlabs_ctor),
+        )
+        result = await elevenlabs_voice_handler.process_voice_message(
+            voice, caption=None
+        )
+
+    assert isinstance(result, ProcessedVoice)
+    assert result.transcription == "Hello from Scribe."
+    assert result.duration == 8
+    assert "Voice message transcription:" in result.prompt
+
+    elevenlabs_ctor.assert_called_once_with(api_key="test-elevenlabs-key")
+    mock_stt.convert.assert_called_once()
+    call_kwargs = mock_stt.convert.call_args
+    assert call_kwargs.kwargs["model_id"] == "scribe_v2"
+
+
+async def test_transcribe_elevenlabs_network_error(elevenlabs_voice_handler):
+    """Network/API errors from ElevenLabs are wrapped with provider context."""
+    mock_stt = MagicMock()
+    mock_stt.convert = AsyncMock(side_effect=Exception("network down"))
+    mock_client = MagicMock()
+    mock_client.speech_to_text = mock_stt
+    elevenlabs_ctor = MagicMock(return_value=mock_client)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(
+            sys.modules,
+            "elevenlabs.client",
+            SimpleNamespace(AsyncElevenLabs=elevenlabs_ctor),
+        )
+        with pytest.raises(
+            RuntimeError, match="ElevenLabs transcription request failed"
+        ):
+            await elevenlabs_voice_handler._transcribe_elevenlabs(b"fake-ogg")
+
+
+async def test_transcribe_elevenlabs_reuses_cached_client(elevenlabs_voice_handler):
+    """ElevenLabs SDK client is created once and reused across calls."""
+    mock_response = MagicMock()
+    mock_response.text = "ok"
+    mock_stt = MagicMock()
+    mock_stt.convert = AsyncMock(return_value=mock_response)
+    mock_client = MagicMock()
+    mock_client.speech_to_text = mock_stt
+    elevenlabs_ctor = MagicMock(return_value=mock_client)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(
+            sys.modules,
+            "elevenlabs.client",
+            SimpleNamespace(AsyncElevenLabs=elevenlabs_ctor),
+        )
+        await elevenlabs_voice_handler._transcribe_elevenlabs(b"a")
+        await elevenlabs_voice_handler._transcribe_elevenlabs(b"b")
+
+    elevenlabs_ctor.assert_called_once_with(api_key="test-elevenlabs-key")
+    assert mock_stt.convert.await_count == 2
+
+
+async def test_transcribe_elevenlabs_empty_response(elevenlabs_voice_handler):
+    """ElevenLabs empty transcriptions are rejected."""
+    mock_response = MagicMock()
+    mock_response.text = "   "
+
+    mock_stt = MagicMock()
+    mock_stt.convert = AsyncMock(return_value=mock_response)
+
+    mock_client = MagicMock()
+    mock_client.speech_to_text = mock_stt
+    elevenlabs_ctor = MagicMock(return_value=mock_client)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(
+            sys.modules,
+            "elevenlabs.client",
+            SimpleNamespace(AsyncElevenLabs=elevenlabs_ctor),
+        )
+        with pytest.raises(ValueError, match="empty response"):
+            await elevenlabs_voice_handler._transcribe_elevenlabs(b"fake-ogg")
+
+
+async def test_transcribe_elevenlabs_missing_optional_dependency(
+    elevenlabs_voice_handler,
+):
+    """Missing elevenlabs package returns a clear install hint."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(sys.modules, "elevenlabs.client", None)
+        with pytest.raises(RuntimeError, match="Optional dependency 'elevenlabs'"):
+            await elevenlabs_voice_handler._transcribe_elevenlabs(b"fake-ogg")
 
 
 async def test_process_voice_message_openai(openai_voice_handler):

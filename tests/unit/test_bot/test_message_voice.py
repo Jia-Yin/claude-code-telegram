@@ -31,6 +31,30 @@ async def test_handle_voice_missing_handler_uses_openai_key(tmp_path):
     assert call_args.kwargs["parse_mode"] == "HTML"
 
 
+async def test_handle_voice_missing_handler_uses_elevenlabs_key(tmp_path):
+    """Classic handler fallback references ELEVENLABS_API_KEY for ElevenLabs provider."""
+    settings = create_test_config(
+        approved_directory=str(tmp_path),
+        voice_provider="elevenlabs",
+    )
+
+    features = MagicMock()
+    features.get_voice_handler.return_value = None
+
+    update = MagicMock()
+    update.effective_user.id = 123
+    update.message.reply_text = AsyncMock()
+
+    context = MagicMock()
+    context.bot_data = {"settings": settings, "features": features}
+    context.user_data = {}
+
+    await handle_voice(update, context)
+
+    call_args = update.message.reply_text.call_args
+    assert "ELEVENLABS_API_KEY" in call_args.args[0]
+
+
 async def test_handle_voice_missing_handler_uses_mistral_key(tmp_path):
     """Classic handler fallback references MISTRAL_API_KEY for Mistral provider."""
     settings = create_test_config(

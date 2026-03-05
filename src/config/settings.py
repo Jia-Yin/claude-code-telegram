@@ -169,9 +169,14 @@ class Settings(BaseSettings):
     enable_voice_messages: bool = Field(
         True, description="Enable voice message transcription"
     )
-    voice_provider: Literal["mistral", "openai"] = Field(
-        "mistral",
-        description="Voice transcription provider: 'mistral' or 'openai'",
+    voice_provider: Literal["elevenlabs", "mistral", "openai"] = Field(
+        "elevenlabs",
+        description=(
+            "Voice transcription provider: 'elevenlabs', 'mistral', or 'openai'"
+        ),
+    )
+    elevenlabs_api_key: Optional[SecretStr] = Field(
+        None, description="ElevenLabs API key for Scribe voice transcription"
     )
     mistral_api_key: Optional[SecretStr] = Field(
         None, description="Mistral API key for voice transcription"
@@ -393,10 +398,12 @@ class Settings(BaseSettings):
     def validate_voice_provider(cls, v: Any) -> str:
         """Validate and normalize voice transcription provider."""
         if v is None:
-            return "mistral"
+            return "elevenlabs"
         provider = str(v).strip().lower()
-        if provider not in {"mistral", "openai"}:
-            raise ValueError("voice_provider must be one of ['mistral', 'openai']")
+        if provider not in {"elevenlabs", "mistral", "openai"}:
+            raise ValueError(
+                "voice_provider must be one of ['elevenlabs', 'mistral', 'openai']"
+            )
         return provider
 
     @field_validator("project_threads_chat_id", mode="before")
@@ -492,6 +499,15 @@ class Settings(BaseSettings):
         return self.mistral_api_key.get_secret_value() if self.mistral_api_key else None
 
     @property
+    def elevenlabs_api_key_str(self) -> Optional[str]:
+        """Get ElevenLabs API key as string."""
+        return (
+            self.elevenlabs_api_key.get_secret_value()
+            if self.elevenlabs_api_key
+            else None
+        )
+
+    @property
     def openai_api_key_str(self) -> Optional[str]:
         """Get OpenAI API key as string."""
         return self.openai_api_key.get_secret_value() if self.openai_api_key else None
@@ -501,6 +517,8 @@ class Settings(BaseSettings):
         """Get the voice transcription model, with provider-specific defaults."""
         if self.voice_transcription_model:
             return self.voice_transcription_model
+        if self.voice_provider == "elevenlabs":
+            return "scribe_v2"
         if self.voice_provider == "openai":
             return "whisper-1"
         return "voxtral-mini-latest"
@@ -513,6 +531,8 @@ class Settings(BaseSettings):
     @property
     def voice_provider_api_key_env(self) -> str:
         """API key environment variable required for the configured voice provider."""
+        if self.voice_provider == "elevenlabs":
+            return "ELEVENLABS_API_KEY"
         if self.voice_provider == "openai":
             return "OPENAI_API_KEY"
         return "MISTRAL_API_KEY"
@@ -520,6 +540,8 @@ class Settings(BaseSettings):
     @property
     def voice_provider_display_name(self) -> str:
         """Human-friendly label for the configured voice provider."""
+        if self.voice_provider == "elevenlabs":
+            return "ElevenLabs Scribe"
         if self.voice_provider == "openai":
             return "OpenAI Whisper"
         return "Mistral Voxtral"

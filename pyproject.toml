@@ -33,6 +33,7 @@ dependencies = [
     "uvicorn[standard]>=0.34.0,<0.35",
     "apscheduler>=3.10.0,<4",
     "PyYAML>=6.0.2,<7",
+    "elevenlabs>=2.38.0",
 ]
 
 [project.urls]
@@ -45,6 +46,7 @@ claude-telegram-bot = "src.main:run"
 
 [project.optional-dependencies]
 voice = [
+    "elevenlabs>=2.0.0,<3",
     "mistralai>=1.0.0,<2",
     "openai>=1.0.0,<2",
 ]

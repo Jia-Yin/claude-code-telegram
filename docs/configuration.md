@@ -135,10 +135,11 @@ ENABLE_QUICK_ACTIONS=true
 
 # Enable voice message transcription
 ENABLE_VOICE_MESSAGES=true
-VOICE_PROVIDER=mistral              # 'mistral' (default) or 'openai'
+VOICE_PROVIDER=elevenlabs           # 'elevenlabs' (default), 'mistral', or 'openai'
+ELEVENLABS_API_KEY=                 # Required when VOICE_PROVIDER=elevenlabs
 MISTRAL_API_KEY=                     # Required when VOICE_PROVIDER=mistral
 OPENAI_API_KEY=                      # Required when VOICE_PROVIDER=openai
-VOICE_TRANSCRIPTION_MODEL=           # Default: voxtral-mini-latest (Mistral) or whisper-1 (OpenAI)
+VOICE_TRANSCRIPTION_MODEL=           # Default: scribe_v2 (ElevenLabs), voxtral-mini-latest (Mistral), whisper-1 (OpenAI)
 VOICE_MAX_FILE_SIZE_MB=20            # Max Telegram voice file size to download (1-200MB)
 ```
 
@@ -320,6 +321,7 @@ The configuration system performs extensive validation:
 
 - `AUTH_TOKEN_SECRET` is required when `ENABLE_TOKEN_AUTH=true`
 - `MCP_CONFIG_PATH` is required when `ENABLE_MCP=true`
+- `ELEVENLABS_API_KEY` is required when `VOICE_PROVIDER=elevenlabs`
 - `MISTRAL_API_KEY` is required when `VOICE_PROVIDER=mistral`
 - `OPENAI_API_KEY` is required when `VOICE_PROVIDER=openai`
 

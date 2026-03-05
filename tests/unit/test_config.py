@@ -457,9 +457,21 @@ def test_project_threads_validation_invalid_mode(tmp_path):
 
 
 def test_voice_provider_validation_and_normalization(tmp_path):
-    """VOICE_PROVIDER accepts only mistral/openai and normalizes casing."""
+    """VOICE_PROVIDER accepts elevenlabs/mistral/openai and normalizes casing."""
     project_dir = tmp_path / "projects"
     project_dir.mkdir()
+
+    elevenlabs_settings = Settings(
+        telegram_bot_token="test_token",
+        telegram_bot_username="test_bot",
+        approved_directory=str(project_dir),
+        voice_provider="ELEVENLABS",
+    )
+
+    assert elevenlabs_settings.voice_provider == "elevenlabs"
+    assert elevenlabs_settings.voice_provider_api_key_env == "ELEVENLABS_API_KEY"
+    assert elevenlabs_settings.voice_provider_display_name == "ElevenLabs Scribe"
+    assert elevenlabs_settings.resolved_voice_model == "scribe_v2"
 
     settings = Settings(
         telegram_bot_token="test_token",
@@ -611,6 +623,7 @@ def test_load_config_does_not_log_api_keys(tmp_path):
     """Startup/error logs should not include raw provider API keys."""
     secrets = {
         "ANTHROPIC_API_KEY": "sk-ant-api03-sensitive-anthropic-token-value",
+        "ELEVENLABS_API_KEY": "elevenlabs-sensitive-token-value-789",
         "MISTRAL_API_KEY": "mistral-sensitive-token-value-123",
         "OPENAI_API_KEY": "sk-sensitive-openai-token-value-456",
     }
@@ -634,6 +647,7 @@ def test_load_config_does_not_log_api_keys(tmp_path):
             "TELEGRAM_BOT_USERNAME",
             "APPROVED_DIRECTORY",
             "ANTHROPIC_API_KEY",
+            "ELEVENLABS_API_KEY",
             "MISTRAL_API_KEY",
             "OPENAI_API_KEY",
         ]:
