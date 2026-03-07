@@ -53,6 +53,17 @@ class ClaudeCodeBot:
         builder.token(self.settings.telegram_token_str)
         builder.defaults(Defaults(do_quote=self.settings.reply_quote))
         builder.rate_limiter(AIORateLimiter(max_retries=1))
+        if (
+            self.settings.agentic_mode
+            and self.settings.enable_project_threads
+            and self.settings.project_threads_mode == "group"
+        ):
+            # Allow parallel processing across different forum topics.
+            builder.concurrent_updates(32)
+            logger.info(
+                "Concurrent topic updates enabled",
+                max_concurrent_updates=32,
+            )
 
         # Configure connection settings
         builder.connect_timeout(30)

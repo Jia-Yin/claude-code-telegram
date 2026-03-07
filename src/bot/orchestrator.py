@@ -115,9 +115,77 @@ def _tool_icon(name: str) -> str:
 class MessageOrchestrator:
     """Routes messages based on mode. Single entry point for all Telegram updates."""
 
+    _THREAD_LOCAL_STATE_KEYS = {
+        "current_directory",
+        "claude_session_id",
+        "force_new_session",
+        "session_started",
+    }
+
     def __init__(self, settings: Settings, deps: Dict[str, Any]):
         self.settings = settings
         self.deps = deps
+        self._thread_locks: Dict[str, asyncio.Lock] = {}
+
+    def _use_thread_local_runtime_state(self) -> bool:
+        """Enable per-topic runtime state for concurrent agentic group topics."""
+        return (
+            self.settings.agentic_mode
+            and self.settings.enable_project_threads
+            and self.settings.project_threads_mode == "group"
+        )
+
+    def _state_key_from_update(self, update: Update) -> Optional[str]:
+        """Build thread state key from update chat/topic."""
+        chat = update.effective_chat
+        message_thread_id = self._extract_message_thread_id(update)
+        if not chat or not message_thread_id:
+            return None
+        return f"{chat.id}:{message_thread_id}"
+
+    def _topic_lock_for_update(self, update: Update) -> Optional[asyncio.Lock]:
+        """Return per-topic lock so one topic processes updates serially."""
+        state_key = self._state_key_from_update(update)
+        if not state_key:
+            return None
+        lock = self._thread_locks.get(state_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._thread_locks[state_key] = lock
+        return lock
+
+    @staticmethod
+    def _runtime_state(
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> Optional[Dict[str, Any]]:
+        """Get per-update runtime state when thread-local mode is active."""
+        runtime = getattr(context, "_thread_runtime", None)
+        return runtime if isinstance(runtime, dict) else None
+
+    def _state_get(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        key: str,
+        default: Any = None,
+    ) -> Any:
+        """Read state from thread-local runtime, falling back to user_data."""
+        runtime = self._runtime_state(context)
+        if runtime is not None and key in self._THREAD_LOCAL_STATE_KEYS:
+            return runtime.get(key, default)
+        return context.user_data.get(key, default)
+
+    def _state_set(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        key: str,
+        value: Any,
+    ) -> None:
+        """Write state to thread-local runtime, falling back to user_data."""
+        runtime = self._runtime_state(context)
+        if runtime is not None and key in self._THREAD_LOCAL_STATE_KEYS:
+            runtime[key] = value
+            return
+        context.user_data[key] = value
 
     def _inject_deps(self, handler: Callable) -> Callable:  # type: ignore[type-arg]
         """Wrap handler to inject dependencies into context.bot_data."""
@@ -127,6 +195,8 @@ class MessageOrchestrator:
                 context.bot_data[key] = value
             context.bot_data["settings"] = self.settings
             context.user_data.pop("_thread_context", None)
+            if hasattr(context, "_thread_runtime"):
+                delattr(context, "_thread_runtime")
 
             is_sync_bypass = handler.__name__ == "sync_threads"
             is_start_bypass = handler.__name__ in {"start_command", "agentic_start"}
@@ -141,16 +211,28 @@ class MessageOrchestrator:
                 else:
                     should_enforce = not is_sync_bypass
 
-            if should_enforce:
-                allowed = await self._apply_thread_routing_context(update, context)
-                if not allowed:
+            async def _run() -> None:
+                if should_enforce:
+                    allowed = await self._apply_thread_routing_context(update, context)
+                    if not allowed:
+                        return
+
+                try:
+                    await handler(update, context)
+                finally:
+                    if should_enforce:
+                        self._persist_thread_state(context)
+                    if hasattr(context, "_thread_runtime"):
+                        delattr(context, "_thread_runtime")
+
+            if should_enforce and self._use_thread_local_runtime_state():
+                topic_lock = self._topic_lock_for_update(update)
+                if topic_lock:
+                    async with topic_lock:
+                        await _run()
                     return
 
-            try:
-                await handler(update, context)
-            finally:
-                if should_enforce:
-                    self._persist_thread_state(context)
+            await _run()
 
         return wrapped
 
@@ -215,20 +297,68 @@ class MessageOrchestrator:
         if not self._is_within(current_dir, project_root) or not current_dir.is_dir():
             current_dir = project_root
 
-        context.user_data["current_directory"] = current_dir
-        context.user_data["claude_session_id"] = state.get("claude_session_id")
-        context.user_data["_thread_context"] = {
-            "chat_id": chat.id,
-            "message_thread_id": message_thread_id,
-            "state_key": state_key,
-            "project_slug": project.slug,
-            "project_root": str(project_root),
-            "project_name": project.name,
-        }
+        if self._use_thread_local_runtime_state():
+            setattr(
+                context,
+                "_thread_runtime",
+                {
+                    "chat_id": chat.id,
+                    "message_thread_id": message_thread_id,
+                    "state_key": state_key,
+                    "project_slug": project.slug,
+                    "project_root": project_root,
+                    "project_name": project.name,
+                    "current_directory": current_dir,
+                    "claude_session_id": state.get("claude_session_id"),
+                    "force_new_session": bool(state.get("force_new_session", False)),
+                    "session_started": bool(state.get("session_started", False)),
+                },
+            )
+        else:
+            context.user_data["current_directory"] = current_dir
+            context.user_data["claude_session_id"] = state.get("claude_session_id")
+            context.user_data["_thread_context"] = {
+                "chat_id": chat.id,
+                "message_thread_id": message_thread_id,
+                "state_key": state_key,
+                "project_slug": project.slug,
+                "project_root": str(project_root),
+                "project_name": project.name,
+            }
         return True
 
     def _persist_thread_state(self, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Persist compatibility keys back into per-thread state."""
+        runtime = self._runtime_state(context)
+        if runtime is not None:
+            project_root = runtime.get("project_root")
+            if not isinstance(project_root, Path):
+                project_root = Path(str(project_root))
+            current_dir = runtime.get("current_directory", project_root)
+            if not isinstance(current_dir, Path):
+                current_dir = Path(str(current_dir))
+            current_dir = current_dir.resolve()
+            if (
+                not self._is_within(current_dir, project_root)
+                or not current_dir.is_dir()
+            ):
+                current_dir = project_root
+
+            state_key = runtime.get("state_key")
+            project_slug = runtime.get("project_slug")
+            if not state_key or not project_slug:
+                return
+
+            thread_states = context.user_data.setdefault("thread_state", {})
+            thread_states[state_key] = {
+                "current_directory": str(current_dir),
+                "claude_session_id": runtime.get("claude_session_id"),
+                "project_slug": project_slug,
+                "force_new_session": bool(runtime.get("force_new_session", False)),
+                "session_started": bool(runtime.get("session_started", False)),
+            }
+            return
+
         thread_context = context.user_data.get("_thread_context")
         if not thread_context:
             return
@@ -499,8 +629,8 @@ class MessageOrchestrator:
                     return
                 except Exception:
                     sync_line = "\n\n🧵 Topic sync failed. Run /sync_threads to retry."
-        current_dir = context.user_data.get(
-            "current_directory", self.settings.approved_directory
+        current_dir = self._state_get(
+            context, "current_directory", self.settings.approved_directory
         )
         dir_display = f"<code>{current_dir}/</code>"
 
@@ -523,7 +653,9 @@ class MessageOrchestrator:
                         )
                         job_id = escape_html(job.get("job_id", "")[:8])
                         lines.append(f"• <b>{name}</b> — <code>{cron}</code>")
-                        lines.append(f"  ⏰ 下次執行：{next_str}　ID：<code>{job_id}</code>")
+                        lines.append(
+                            f"  ⏰ 下次執行：{next_str}　ID：<code>{job_id}</code>"
+                        )
                     schedule_line = "\n".join(lines)
             except Exception:
                 pass
@@ -543,9 +675,9 @@ class MessageOrchestrator:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         """Reset session, one-line confirmation."""
-        context.user_data["claude_session_id"] = None
-        context.user_data["session_started"] = True
-        context.user_data["force_new_session"] = True
+        self._state_set(context, "claude_session_id", None)
+        self._state_set(context, "session_started", True)
+        self._state_set(context, "force_new_session", True)
 
         await update.message.reply_text("Session reset. What's next?")
 
@@ -553,12 +685,12 @@ class MessageOrchestrator:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         """Compact one-line status, no buttons."""
-        current_dir = context.user_data.get(
-            "current_directory", self.settings.approved_directory
+        current_dir = self._state_get(
+            context, "current_directory", self.settings.approved_directory
         )
         dir_display = str(current_dir)
 
-        session_id = context.user_data.get("claude_session_id")
+        session_id = self._state_get(context, "claude_session_id")
         session_status = "active" if session_id else "none"
 
         # Cost info
@@ -935,14 +1067,14 @@ class MessageOrchestrator:
             )
             return
 
-        current_dir = context.user_data.get(
-            "current_directory", self.settings.approved_directory
+        current_dir = self._state_get(
+            context, "current_directory", self.settings.approved_directory
         )
-        session_id = context.user_data.get("claude_session_id")
+        session_id = self._state_get(context, "claude_session_id")
 
         # Check if /new was used — skip auto-resume for this first message.
         # Flag is only cleared after a successful run so retries keep the intent.
-        force_new = bool(context.user_data.get("force_new_session"))
+        force_new = bool(self._state_get(context, "force_new_session"))
 
         # --- Verbose progress tracking via stream callback ---
         tool_log: List[Dict[str, Any]] = []
@@ -986,9 +1118,9 @@ class MessageOrchestrator:
 
             # New session created successfully — clear the one-shot flag
             if force_new:
-                context.user_data["force_new_session"] = False
+                self._state_set(context, "force_new_session", False)
 
-            context.user_data["claude_session_id"] = claude_response.session_id
+            self._state_set(context, "claude_session_id", claude_response.session_id)
 
             # Track directory changes
             from .handlers.message import _update_working_directory_from_claude_response
@@ -1196,14 +1328,14 @@ class MessageOrchestrator:
             )
             return
 
-        current_dir = context.user_data.get(
-            "current_directory", self.settings.approved_directory
+        current_dir = self._state_get(
+            context, "current_directory", self.settings.approved_directory
         )
-        session_id = context.user_data.get("claude_session_id")
+        session_id = self._state_get(context, "claude_session_id")
 
         # Check if /new was used — skip auto-resume for this first message.
         # Flag is only cleared after a successful run so retries keep the intent.
-        force_new = bool(context.user_data.get("force_new_session"))
+        force_new = bool(self._state_get(context, "force_new_session"))
 
         verbose_level = self._get_verbose_level(context)
         tool_log: List[Dict[str, Any]] = []
@@ -1229,9 +1361,9 @@ class MessageOrchestrator:
             )
 
             if force_new:
-                context.user_data["force_new_session"] = False
+                self._state_set(context, "force_new_session", False)
 
-            context.user_data["claude_session_id"] = claude_response.session_id
+            self._state_set(context, "claude_session_id", claude_response.session_id)
 
             from .handlers.message import _update_working_directory_from_claude_response
 
@@ -1398,11 +1530,11 @@ class MessageOrchestrator:
             )
             return
 
-        current_dir = context.user_data.get(
-            "current_directory", self.settings.approved_directory
+        current_dir = self._state_get(
+            context, "current_directory", self.settings.approved_directory
         )
-        session_id = context.user_data.get("claude_session_id")
-        force_new = bool(context.user_data.get("force_new_session"))
+        session_id = self._state_get(context, "claude_session_id")
+        force_new = bool(self._state_get(context, "force_new_session"))
 
         verbose_level = self._get_verbose_level(context)
         tool_log: List[Dict[str, Any]] = []
@@ -1430,9 +1562,9 @@ class MessageOrchestrator:
             heartbeat.cancel()
 
         if force_new:
-            context.user_data["force_new_session"] = False
+            self._state_set(context, "force_new_session", False)
 
-        context.user_data["claude_session_id"] = claude_response.session_id
+        self._state_set(context, "claude_session_id", claude_response.session_id)
 
         from .handlers.message import _update_working_directory_from_claude_response
 
@@ -1510,7 +1642,7 @@ class MessageOrchestrator:
         """
         args = update.message.text.split()[1:] if update.message.text else []
         base = self.settings.approved_directory
-        current_dir = context.user_data.get("current_directory", base)
+        current_dir = self._state_get(context, "current_directory", base)
 
         if args:
             # Switch to named repo
@@ -1523,7 +1655,7 @@ class MessageOrchestrator:
                 )
                 return
 
-            context.user_data["current_directory"] = target_path
+            self._state_set(context, "current_directory", target_path)
 
             # Try to find a resumable session
             claude_integration = context.bot_data.get("claude_integration")
@@ -1534,7 +1666,7 @@ class MessageOrchestrator:
                 )
                 if existing:
                     session_id = existing.session_id
-            context.user_data["claude_session_id"] = session_id
+            self._state_set(context, "claude_session_id", session_id)
 
             is_git = (target_path / ".git").is_dir()
             git_badge = " (git)" if is_git else ""
@@ -1616,7 +1748,7 @@ class MessageOrchestrator:
             )
             return
 
-        context.user_data["current_directory"] = new_path
+        self._state_set(context, "current_directory", new_path)
 
         # Look for a resumable session instead of always clearing
         claude_integration = context.bot_data.get("claude_integration")
@@ -1627,7 +1759,7 @@ class MessageOrchestrator:
             )
             if existing:
                 session_id = existing.session_id
-        context.user_data["claude_session_id"] = session_id
+        self._state_set(context, "claude_session_id", session_id)
 
         is_git = (new_path / ".git").is_dir()
         git_badge = " (git)" if is_git else ""
@@ -1680,13 +1812,13 @@ class MessageOrchestrator:
         lower = args.lower()
         if lower.startswith("remove ") or lower.startswith("刪除 "):
             sep = "remove " if lower.startswith("remove ") else "刪除 "
-            job_id_prefix = args[len(sep):].strip()
+            job_id_prefix = args[len(sep) :].strip()
             await self._schedule_remove_by_id(update, context, scheduler, job_id_prefix)
             return
 
         if lower.startswith("update ") or lower.startswith("修改 "):
             sep = "update " if lower.startswith("update ") else "修改 "
-            rest = args[len(sep):].strip()
+            rest = args[len(sep) :].strip()
             rest_parts = rest.split(None, 1)
             if len(rest_parts) < 2:
                 await update.message.reply_text(
@@ -1709,9 +1841,7 @@ class MessageOrchestrator:
 
         Returns a dict with: name, cron, prompt, valid (bool), error (str|None).
         """
-        client = anthropic.AsyncAnthropic(
-            api_key=self.settings.anthropic_api_key_str
-        )
+        client = anthropic.AsyncAnthropic(api_key=self.settings.anthropic_api_key_str)
         system = (
             "You are a scheduling assistant. Parse the user's natural language schedule "
             "description into a structured JSON object. Reply with ONLY valid JSON, no markdown.\n\n"
@@ -1782,12 +1912,16 @@ class MessageOrchestrator:
 
             display_name = job.get("job_name", "")[:15]
             keyboard_rows.append(
-                [InlineKeyboardButton(
-                    f"🗑 刪除 {display_name}",
-                    callback_data=f"sched:remove:{job_id}",
-                )]
+                [
+                    InlineKeyboardButton(
+                        f"🗑 刪除 {display_name}",
+                        callback_data=f"sched:remove:{job_id}",
+                    )
+                ]
             )
-        return "\n".join(lines).rstrip() + usage_hint, InlineKeyboardMarkup(keyboard_rows)
+        return "\n".join(lines).rstrip() + usage_hint, InlineKeyboardMarkup(
+            keyboard_rows
+        )
 
     async def _schedule_list(
         self,
@@ -1813,9 +1947,7 @@ class MessageOrchestrator:
             parsed = await self._parse_schedule_nl(description)
         except Exception as e:
             logger.warning("Schedule NL parse failed", error=str(e))
-            await progress.edit_text(
-                "❌ 解析失敗，請稍後再試。", parse_mode="HTML"
-            )
+            await progress.edit_text("❌ 解析失敗，請稍後再試。", parse_mode="HTML")
             return
 
         if not parsed.get("valid"):
@@ -1849,10 +1981,18 @@ class MessageOrchestrator:
             f"任務：{prompt_preview}{ellipsis}\n\n"
             f"確認要新增此排程嗎？",
             parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ 確認", callback_data="sched:confirm_add"),
-                InlineKeyboardButton("❌ 取消", callback_data="sched:cancel_add"),
-            ]]),
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "✅ 確認", callback_data="sched:confirm_add"
+                        ),
+                        InlineKeyboardButton(
+                            "❌ 取消", callback_data="sched:cancel_add"
+                        ),
+                    ]
+                ]
+            ),
         )
 
     async def _schedule_remove_by_id(
@@ -1979,10 +2119,18 @@ class MessageOrchestrator:
             f"任務內容：{prompt_preview}{ellipsis}\n\n"
             f"確認修改？",
             parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ 確認修改", callback_data="sched:confirm_update"),
-                InlineKeyboardButton("❌ 取消", callback_data="sched:cancel_update"),
-            ]]),
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "✅ 確認修改", callback_data="sched:confirm_update"
+                        ),
+                        InlineKeyboardButton(
+                            "❌ 取消", callback_data="sched:cancel_update"
+                        ),
+                    ]
+                ]
+            ),
         )
 
     async def _agentic_schedule_callback(

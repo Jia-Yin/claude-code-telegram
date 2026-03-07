@@ -1240,9 +1240,15 @@ def _update_working_directory_from_claude_response(
     ]
 
     content = claude_response.content.lower()
-    current_dir = context.user_data.get(
-        "current_directory", settings.approved_directory
-    )
+    runtime = getattr(context, "_thread_runtime", None)
+    if isinstance(runtime, dict):
+        current_dir = runtime.get("current_directory", settings.approved_directory)
+    else:
+        current_dir = context.user_data.get(
+            "current_directory", settings.approved_directory
+        )
+    if not isinstance(current_dir, Path):
+        current_dir = Path(str(current_dir))
 
     for pattern in patterns:
         matches = re.findall(pattern, content, re.MULTILINE | re.IGNORECASE)
@@ -1266,7 +1272,10 @@ def _update_working_directory_from_claude_response(
                     new_path.is_relative_to(settings.approved_directory)
                     and new_path.exists()
                 ):
-                    context.user_data["current_directory"] = new_path
+                    if isinstance(runtime, dict):
+                        runtime["current_directory"] = new_path
+                    else:
+                        context.user_data["current_directory"] = new_path
                     logger.info(
                         "Updated working directory from Claude response",
                         old_dir=str(current_dir),

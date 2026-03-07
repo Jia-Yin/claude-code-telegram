@@ -51,6 +51,28 @@ def group_thread_settings(tmp_dir):
 
 
 @pytest.fixture
+def agentic_group_thread_settings(tmp_dir):
+    project_dir = tmp_dir / "project_a"
+    project_dir.mkdir()
+    config_file = tmp_dir / "projects.yaml"
+    config_file.write_text(
+        "projects:\n"
+        "  - slug: project_a\n"
+        "    name: Project A\n"
+        "    path: project_a\n",
+        encoding="utf-8",
+    )
+    return create_test_config(
+        approved_directory=str(tmp_dir),
+        agentic_mode=True,
+        enable_project_threads=True,
+        project_threads_mode="group",
+        project_threads_chat_id=-1001234567890,
+        projects_config_path=str(config_file),
+    )
+
+
+@pytest.fixture
 def private_thread_settings(tmp_dir):
     project_dir = tmp_dir / "project_a"
     project_dir.mkdir()
@@ -785,6 +807,60 @@ async def test_thread_mode_loads_and_persists_thread_state(group_thread_settings
     assert (
         context.user_data["thread_state"]["-1001234567890:777"]["claude_session_id"]
         == "new-session"
+    )
+
+
+async def test_agentic_group_thread_mode_uses_runtime_state(
+    agentic_group_thread_settings, deps
+):
+    """Agentic group mode keeps thread state in per-update runtime context."""
+    orchestrator = MessageOrchestrator(agentic_group_thread_settings, deps)
+
+    project_path = agentic_group_thread_settings.approved_directory / "project_a"
+    project = SimpleNamespace(
+        slug="project_a",
+        name="Project A",
+        absolute_path=project_path,
+    )
+
+    project_threads_manager = MagicMock()
+    project_threads_manager.resolve_project = AsyncMock(return_value=project)
+    project_threads_manager.guidance_message.return_value = "Use project thread"
+    deps["project_threads_manager"] = project_threads_manager
+
+    async def dummy_handler(update, context):
+        assert "claude_session_id" not in context.user_data
+        assert (
+            orchestrator._state_get(context, "claude_session_id")
+            == "old-agentic-session"
+        )
+        orchestrator._state_set(context, "claude_session_id", "new-agentic-session")
+
+    wrapped = orchestrator._inject_deps(dummy_handler)
+
+    update = MagicMock()
+    update.effective_chat.id = -1001234567890
+    update.effective_message.message_thread_id = 777
+    update.effective_message.reply_text = AsyncMock()
+    update.callback_query = None
+
+    context = MagicMock()
+    context.bot_data = {}
+    context.user_data = {
+        "thread_state": {
+            "-1001234567890:777": {
+                "current_directory": str(project_path),
+                "claude_session_id": "old-agentic-session",
+            }
+        }
+    }
+
+    await wrapped(update, context)
+
+    assert "claude_session_id" not in context.user_data
+    assert (
+        context.user_data["thread_state"]["-1001234567890:777"]["claude_session_id"]
+        == "new-agentic-session"
     )
 
 
