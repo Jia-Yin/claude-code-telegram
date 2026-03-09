@@ -126,6 +126,8 @@ class MessageOrchestrator:
         self.settings = settings
         self.deps = deps
         self._thread_locks: Dict[str, asyncio.Lock] = {}
+        # Track the PTB task currently running for each user (agentic mode)
+        self._user_tasks: Dict[int, "asyncio.Task[None]"] = {}
 
     def _use_thread_local_runtime_state(self) -> bool:
         """Enable per-topic runtime state for concurrent agentic group topics."""
@@ -228,6 +230,30 @@ class MessageOrchestrator:
             if should_enforce and self._use_thread_local_runtime_state():
                 topic_lock = self._topic_lock_for_update(update)
                 if topic_lock:
+                    # If a Claude task is already running for this user, reply
+                    # immediately *before* waiting on the lock so the user isn't
+                    # left with a silently ignored message.
+                    _CLAUDE_MSG_HANDLERS = {
+                        "agentic_text",
+                        "agentic_document",
+                        "agentic_photo",
+                        "agentic_voice",
+                    }
+                    if handler.__name__ in _CLAUDE_MSG_HANDLERS:
+                        _uid = (
+                            update.effective_user.id
+                            if update.effective_user
+                            else None
+                        )
+                        if _uid is not None:
+                            _existing = self._user_tasks.get(_uid)
+                            if _existing is not None and not _existing.done():
+                                if update.effective_message:
+                                    await update.effective_message.reply_text(
+                                        "⏳ Previous task still running."
+                                        "\nUse /cancel to stop it first."
+                                    )
+                                return
                     async with topic_lock:
                         await _run()
                     return
@@ -437,6 +463,7 @@ class MessageOrchestrator:
         handlers = [
             ("start", self.agentic_start),
             ("new", self.agentic_new),
+            ("cancel", self.agentic_cancel),
             ("status", self.agentic_status),
             ("verbose", self.agentic_verbose),
             ("repo", self.agentic_repo),
@@ -557,6 +584,7 @@ class MessageOrchestrator:
             commands = [
                 BotCommand("start", "Start the bot"),
                 BotCommand("new", "Start a fresh session"),
+                BotCommand("cancel", "Cancel the current running task"),
                 BotCommand("status", "Show session status"),
                 BotCommand("verbose", "Set output verbosity (0/1/2)"),
                 BotCommand("repo", "List repos / switch workspace"),
@@ -680,6 +708,18 @@ class MessageOrchestrator:
         self._state_set(context, "force_new_session", True)
 
         await update.message.reply_text("Session reset. What's next?")
+
+    async def agentic_cancel(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Cancel the currently running Claude task for this user."""
+        user_id = update.effective_user.id
+        task = self._user_tasks.get(user_id)
+        if task is not None and not task.done():
+            task.cancel()
+            await update.message.reply_text("⏹ Cancelling current task…")
+        else:
+            await update.message.reply_text("No task currently running.")
 
     async def agentic_status(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -1046,6 +1086,11 @@ class MessageOrchestrator:
             message_length=len(message_text),
         )
 
+        # Register this coroutine's asyncio.Task so /cancel can abort it.
+        _current = asyncio.current_task()
+        if _current is not None:
+            self._user_tasks[user_id] = _current  # type: ignore[assignment]
+
         # Rate limit check
         rate_limiter = context.bot_data.get("rate_limiter")
         if rate_limiter:
@@ -1151,6 +1196,27 @@ class MessageOrchestrator:
                 claude_response.content
             )
 
+            # If Claude hit the turn limit, append a continuation hint
+            if claude_response.is_error and "max_turns" in (
+                claude_response.stop_reason or ""
+            ).lower():
+                from .utils.formatting import FormattedMessage as _FM
+
+                formatted_messages.append(
+                    _FM(
+                        "⚠️ <b>Turn limit reached</b> — task may be incomplete.\n"
+                        "Reply with any message to continue where it left off.",
+                        parse_mode="HTML",
+                    )
+                )
+
+        except asyncio.CancelledError:
+            # Task was aborted via /cancel — clean up the progress indicator
+            try:
+                await progress_msg.edit_text("⏹ Task cancelled.")
+            except Exception:
+                pass
+            raise  # Re-raise so the coroutine is properly marked cancelled
         except Exception as e:
             success = False
             logger.error("Claude integration failed", error=str(e), user_id=user_id)
@@ -1167,6 +1233,8 @@ class MessageOrchestrator:
                     await draft_streamer.flush()
                 except Exception:
                     logger.debug("Draft flush failed in finally block", user_id=user_id)
+            # Always deregister this task so subsequent messages are not blocked
+            self._user_tasks.pop(user_id, None)
 
         try:
             await progress_msg.delete()

@@ -52,6 +52,7 @@ class ClaudeResponse:
     num_turns: int
     is_error: bool = False
     error_type: Optional[str] = None
+    stop_reason: Optional[str] = None
     tools_used: List[Dict[str, Any]] = field(default_factory=list)
 
 
@@ -299,11 +300,15 @@ class ClaudeSDKManager:
             tools_used: List[Dict[str, Any]] = []
             claude_session_id = None
             result_content = None
+            result_is_error = False
+            result_stop_reason: Optional[str] = None
             for message in messages:
                 if isinstance(message, ResultMessage):
                     cost = getattr(message, "total_cost_usd", 0.0) or 0.0
                     claude_session_id = getattr(message, "session_id", None)
                     result_content = getattr(message, "result", None)
+                    result_is_error = bool(getattr(message, "is_error", False))
+                    result_stop_reason = getattr(message, "subtype", None) or None
                     current_time = asyncio.get_event_loop().time()
                     for msg in messages:
                         if isinstance(msg, AssistantMessage):
@@ -376,6 +381,8 @@ class ClaudeSDKManager:
                         if isinstance(m, (UserMessage, AssistantMessage))
                     ]
                 ),
+                is_error=result_is_error,
+                stop_reason=result_stop_reason,
                 tools_used=tools_used,
             )
 
