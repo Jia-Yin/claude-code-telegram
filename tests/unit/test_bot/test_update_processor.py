@@ -1,7 +1,7 @@
 """Tests for StopAwareUpdateProcessor.
 
 Covers:
-- Stop callbacks bypass the sequential lock (run immediately)
+- Stop callbacks and /cancel commands bypass the sequential lock (run immediately)
 - Regular updates are serialized (only one at a time)
 - Non-stop callbacks (e.g. cd:) go through the sequential lock
 """
@@ -9,7 +9,7 @@ Covers:
 import asyncio
 from unittest.mock import MagicMock
 
-from telegram import CallbackQuery, Update
+from telegram import CallbackQuery, Message, Update
 
 from src.bot.update_processor import StopAwareUpdateProcessor
 
@@ -27,6 +27,16 @@ def _make_update(callback_data: str | None = None) -> Update:
         update.callback_query = cb
     else:
         update.callback_query = None
+    return update
+
+
+def _make_command_update(text: str) -> Update:
+    """Build a minimal Update mock with a message command."""
+    update = MagicMock(spec=Update)
+    message = MagicMock(spec=Message)
+    message.text = text
+    update.effective_message = message
+    update.callback_query = None
     return update
 
 
@@ -57,6 +67,20 @@ class TestIsPriorityCallback:
         cb.data = None
         update.callback_query = cb
         assert StopAwareUpdateProcessor._is_priority_callback(update) is False
+
+
+class TestIsPriorityCommand:
+    def test_cancel_command_detected(self):
+        update = _make_command_update("/cancel")
+        assert StopAwareUpdateProcessor._is_priority_command(update) is True
+
+    def test_cancel_command_with_bot_name_detected(self):
+        update = _make_command_update("/cancel@testbot")
+        assert StopAwareUpdateProcessor._is_priority_command(update) is True
+
+    def test_other_command_not_priority(self):
+        update = _make_command_update("/status")
+        assert StopAwareUpdateProcessor._is_priority_command(update) is False
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +132,48 @@ class TestStopCallbackBypassesLock:
             "regular_start",
             "stop_start",
             "stop_end",
+            "regular_end",
+        ]
+
+
+class TestCancelCommandBypassesLock:
+    async def test_cancel_command_runs_while_lock_held(self):
+        """A /cancel command runs immediately even when the lock is held."""
+        processor = StopAwareUpdateProcessor()
+
+        execution_order: list[str] = []
+        lock_acquired = asyncio.Event()
+        cancel_done = asyncio.Event()
+
+        async def slow_coroutine():
+            execution_order.append("regular_start")
+            lock_acquired.set()
+            await cancel_done.wait()
+            execution_order.append("regular_end")
+
+        async def cancel_coroutine():
+            execution_order.append("cancel_start")
+            execution_order.append("cancel_end")
+            cancel_done.set()
+
+        regular_update = _make_update(None)
+        cancel_update = _make_command_update("/cancel")
+
+        regular_task = asyncio.create_task(
+            processor.do_process_update(regular_update, slow_coroutine())
+        )
+        await lock_acquired.wait()
+
+        cancel_task = asyncio.create_task(
+            processor.do_process_update(cancel_update, cancel_coroutine())
+        )
+
+        await asyncio.gather(regular_task, cancel_task)
+
+        assert execution_order == [
+            "regular_start",
+            "cancel_start",
+            "cancel_end",
             "regular_end",
         ]
 

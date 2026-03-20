@@ -9,22 +9,12 @@ projects:
     path: BridgeAI
     enabled: true
 
-  - slug: cjudge
-    name: CJudge
-    path: cjudge
-    enabled: true
-
-  - slug: csai
-    name: CSAI
-    path: csai
-    enabled: true
-
-  - slug: infra
-    name: Infrastructure
-    path: infra
-    enabled: true
-
   - slug: claude-code-telegram
-    name: Claude Code Telegram
+    name: CCT
     path: claude-code-telegram
+    enabled: true
+
+  - slug: agentworld
+    name: AgentWorld
+    path: AgentWorld
     enabled: true

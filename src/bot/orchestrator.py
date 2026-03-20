@@ -734,8 +734,21 @@ class MessageOrchestrator:
     ) -> None:
         """Cancel the currently running Claude task for this user."""
         user_id = update.effective_user.id
+        active = self._active_requests.get(user_id)
         task = self._user_tasks.get(user_id)
-        if task is not None and not task.done():
+
+        if active is not None and not active.interrupted:
+            active.interrupt_event.set()
+            active.interrupted = True
+            try:
+                if active.progress_msg is not None:
+                    await active.progress_msg.edit_text(
+                        "Stopping...", reply_markup=None
+                    )
+            except Exception:
+                pass
+            await update.message.reply_text("⏹ Cancelling current task…")
+        elif task is not None and not task.done():
             task.cancel()
             await update.message.reply_text("⏹ Cancelling current task…")
         else:

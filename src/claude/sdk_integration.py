@@ -244,8 +244,10 @@ class ClaudeSDKManager:
             # Collect messages via ClaudeSDKClient
             messages: List[Message] = []
             interrupted = False
+            client: Optional[ClaudeSDKClient] = None
 
             async def _run_client() -> None:
+                nonlocal client
                 client = ClaudeSDKClient(options)
                 try:
                     await client.connect()
@@ -291,6 +293,15 @@ class ClaudeSDKManager:
                     nonlocal interrupted
                     await interrupt_event.wait()
                     interrupted = True
+                    if client is not None:
+                        try:
+                            await client.interrupt()
+                            return
+                        except Exception as interrupt_error:
+                            logger.warning(
+                                "Claude SDK interrupt failed; cancelling task",
+                                error=str(interrupt_error),
+                            )
                     run_task.cancel()
 
                 interrupt_watcher = asyncio.create_task(_cancel_on_interrupt())

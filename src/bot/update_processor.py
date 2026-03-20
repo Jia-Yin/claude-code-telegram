@@ -1,8 +1,8 @@
 """Selective-concurrency update processor for PTB.
 
 Regular updates (messages, commands) process sequentially -- one at a time.
-Priority callbacks (stop:*) bypass the queue and run immediately so they can
-interrupt the currently-running handler.
+Priority interrupts (stop:* callbacks and /cancel commands) bypass the queue
+and run immediately so they can interrupt the currently-running handler.
 """
 
 import asyncio
@@ -13,14 +13,14 @@ from telegram.ext._baseupdateprocessor import BaseUpdateProcessor
 
 
 class StopAwareUpdateProcessor(BaseUpdateProcessor):
-    """Update processor that lets priority callbacks bypass sequential processing.
+    """Update processor that lets priority interrupts bypass sequential processing.
 
     PTB calls ``process_update(update, coroutine)`` for every incoming update.
     The base class holds a semaphore (max 256) then calls our
     ``do_process_update()``.
 
-    For priority callbacks (``stop:*``): we just ``await coroutine`` -- runs
-    immediately.
+    For priority interrupts (``stop:*`` and ``/cancel``): we just
+    ``await coroutine`` -- runs immediately.
     For everything else: we acquire ``_sequential_lock`` first -- only one
     runs at a time.
 
@@ -31,6 +31,7 @@ class StopAwareUpdateProcessor(BaseUpdateProcessor):
     """
 
     _PRIORITY_PREFIXES = ("stop:",)
+    _PRIORITY_COMMANDS = ("/cancel",)
 
     def __init__(self) -> None:
         # High limit so priority callbacks are never blocked by semaphore
@@ -49,13 +50,30 @@ class StopAwareUpdateProcessor(BaseUpdateProcessor):
             and cb.data.startswith(cls._PRIORITY_PREFIXES)
         )
 
+    @classmethod
+    def _is_priority_command(cls, update: object) -> bool:
+        """Return True if the update is a priority command message."""
+        if not isinstance(update, Update):
+            return False
+
+        message = update.effective_message
+        text = getattr(message, "text", None)
+        if not isinstance(text, str) or not text:
+            return False
+
+        normalized = text.strip().split(None, 1)[0]
+        return any(
+            normalized == command or normalized.startswith(f"{command}@")
+            for command in cls._PRIORITY_COMMANDS
+        )
+
     async def do_process_update(
         self,
         update: object,
         coroutine: Awaitable[Any],
     ) -> None:
         """Process an update, applying sequential lock for non-priority updates."""
-        if self._is_priority_callback(update):
+        if self._is_priority_callback(update) or self._is_priority_command(update):
             # Run immediately -- no sequential lock
             await coroutine
         else:

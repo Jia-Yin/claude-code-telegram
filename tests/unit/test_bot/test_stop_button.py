@@ -169,6 +169,38 @@ class TestStopCallback:
         query.answer.assert_awaited_once_with("Already stopping...", show_alert=False)
 
 
+class TestCancelCommand:
+    """agentic_cancel routing logic."""
+
+    async def test_cancel_sets_interrupt_event(self, orchestrator):
+        """The /cancel command should trigger the same interrupt path as Stop."""
+        event = asyncio.Event()
+        progress_msg = AsyncMock()
+        active = ActiveRequest(
+            user_id=100, interrupt_event=event, progress_msg=progress_msg
+        )
+        orchestrator._active_requests[100] = active
+
+        update = MagicMock()
+        update.effective_user = MagicMock()
+        update.effective_user.id = 100
+        update.message = AsyncMock()
+
+        context = MagicMock()
+        context.bot_data = {}
+
+        await orchestrator.agentic_cancel(update, context)
+
+        assert event.is_set()
+        assert active.interrupted is True
+        progress_msg.edit_text.assert_awaited_once_with(
+            "Stopping...", reply_markup=None
+        )
+        update.message.reply_text.assert_awaited_once_with(
+            "⏹ Cancelling current task…"
+        )
+
+
 class TestStopButtonOnProgress:
     """Verify the Stop button is attached to progress messages."""
 
@@ -403,6 +435,7 @@ class TestSDKInterrupt:
             )
 
         assert response.interrupted is True
+        client.interrupt.assert_awaited_once()
         # Partial content from assistant message (ResultMessage never arrived)
         assert response.content == "partial"
 
