@@ -65,6 +65,10 @@ class ClaudeCodeBot:
                 max_concurrent_updates=32,
             )
 
+        from .update_processor import StopAwareUpdateProcessor
+
+        builder.concurrent_updates(StopAwareUpdateProcessor())
+
         # Configure connection settings
         builder.connect_timeout(30)
         builder.read_timeout(30)
